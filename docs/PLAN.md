@@ -26,7 +26,7 @@ PaperKit's surface splits into four kinds of state. The right packaging falls ou
 | **Markup** | the canvas content | two-way | `TextEditor(text:)` |
 | **Configuration** | feature set, editable, ruler, finger-draws policy, background content | down only | `.textFieldStyle`, `.disabled`, `.scrollDisabled` |
 | **Interaction state** | current tool, selection | two-way | `@FocusState` + `.focused` |
-| **Layout and geometry** | how the page sits in the view, zoom scale, visible rect | down (content mode), up (geometry) | `Image` + `.aspectRatio(contentMode:)`, `.onScrollGeometryChange` |
+| **Layout and geometry** | how the page sits in the view, zoom scale, visible rect | down (content mode), up (geometry) | `Image` content modes, `.onScrollGeometryChange` |
 | **Commands** | undo, insert shape, present insertion menu | one-shot | `UndoManager` in environment, `.popover(isPresented:)` |
 
 Every option below is judged by how cleanly it handles all four rows.
@@ -138,7 +138,7 @@ struct NotesView: View {
         }
         .paperTool($tool)                      // two-way: tool picker writes back
         .paperSelection($selection)            // two-way, like .focused($field)
-        .paperContentMode(.fit)                // like Image .aspectRatio(contentMode:)
+        .paperContentMode(.fit)                // like an Image content mode
         .paperFeatures(.latest)                // config, down only
         .paperToolPicker(isVisible: true)      // system PKToolPicker
         .paperInsertionMenu(isPresented: $showInsertMenu)
@@ -187,16 +187,9 @@ public struct PaperSelection: Hashable, Sendable {
 
 ### 4.4 Layout, zoom, and geometry
 
-**The editor fills the space it is offered.** `PaperEditor` is greedy, like `Color`, `ScrollView`, or a `.resizable()` image. Constrain it with the modifiers you already use: `.frame`, `.padding`, `.aspectRatio`.
+**The editor fills the space it is offered.** `PaperEditor` is greedy, like `Color`, `ScrollView`, or a `.resizable()` image. Constrain it with the modifiers you already use, such as `.frame` and `.padding`.
 
-**`.aspectRatio` shapes the view, not the page.** It is SwiftUI's standard modifier, and we don't override it. It changes the editor's frame to match the page shape, so there is no empty margin around the page:
-
-```swift
-PaperEditor(markup: $markup)
-    .aspectRatio(contentMode: .fit)   // frame takes the page's shape, letterboxed by the parent
-```
-
-This works with no ratio argument, exactly as it does on `Image`, because the representable implements `sizeThatFits`. It returns the proposed size when the parent offers one (so the editor stays greedy) and the page size when asked for its ideal size (which is what `.aspectRatio` reads). When the frame already matches the page, `.paperContentMode` has nothing left to do. The two modifiers answer different questions: `.aspectRatio` sets the shape of the box, and `.paperContentMode` places the page inside whatever box results.
+**No `.aspectRatio` needed.** The page's shape comes from `Markup(paperSize:)` and its placement from `.paperContentMode`, so the standard `.aspectRatio` modifier plays no part in the normal design. It still behaves correctly if someone applies it (shrinking the editor's frame to the page shape), because the representable implements `sizeThatFits` and reports the page size as its ideal size.
 
 **The page has a fixed size, the view does not.** `Markup.bounds` is content, not layout, the same way an image's pixel size is. If bounds followed the view, rotating an iPad would resize the canvas and every stroke would land in the wrong place. You set the paper size when you create the markup:
 
@@ -204,19 +197,17 @@ This works with no ratio argument, exactly as it does on `Image`, because the re
 @State private var markup = Markup(paperSize: .letter)            // 8.5 × 11 in
 @State private var markup = Markup(paperSize: .a4)
 @State private var markup = Markup(paperSize: .inches(8.5, 10))   // custom
-@State private var markup = Markup(paperSize: .aspectRatio(4/3))  // shape only
 
 public struct PaperSize: Hashable, Codable, Sendable {
     public var size: CGSize                        // points, 72 per inch
     public static let letter, legal, a4, a5, square: PaperSize
     public static func inches(_ w: Double, _ h: Double) -> PaperSize
     public static func millimeters(_ w: Double, _ h: Double) -> PaperSize
-    public static func aspectRatio(_ ratio: CGFloat) -> PaperSize
     public var landscape: PaperSize { get }        // swaps width and height
 }
 ```
 
-**Units: points, stored as an absolute size.** Points (1/72 inch) are what `PaperMarkup` bounds, PencilKit stroke widths, and text box font sizes already use, and they map one to one onto PDF and print. A ratio alone is not enough: a 3 pt pen line looks fine on a 612 pt-wide letter page and invisible on a 6,000 pt-wide one, so the absolute size gives tool widths and text sizes their meaning. The ratio is derived, never stored. `.aspectRatio(_:)` is a convenience that picks a 612 pt width and computes the height. `.inches` and `.millimeters` convert to points on creation, and an `init(width:height:)` taking `Measurement<UnitLength>` covers any other unit.
+**Units: points, stored as an absolute size.** Points (1/72 inch) are what `PaperMarkup` bounds, PencilKit stroke widths, and text box font sizes already use, and they map one to one onto PDF and print. A ratio alone is not enough: a 3 pt pen line looks fine on a 612 pt-wide letter page and invisible on a 6,000 pt-wide one, so the absolute size gives tool widths and text sizes their meaning. The ratio is derived, never stored, and there is deliberately no ratio-only constructor. `.inches` and `.millimeters` convert to points on creation, and an `init(width:height:)` taking `Measurement<UnitLength>` covers any other unit.
 
 Static members follow the `Font` and `Color` pattern. Paper size belongs on the markup, not on a view modifier, because strokes are stored in page coordinates: the size has to travel with the content. A `Markup()` created with no size adopts the editor's size on first layout, then stays fixed.
 
