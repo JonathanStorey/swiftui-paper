@@ -26,7 +26,7 @@ PaperKit's surface splits into four kinds of state. The right packaging falls ou
 | **Markup** | the canvas content | two-way | `TextEditor(text:)` |
 | **Configuration** | feature set, editable, ruler, finger-draws policy, background content | down only | `.textFieldStyle`, `.disabled`, `.scrollDisabled` |
 | **Interaction state** | current tool, selection | two-way | `@FocusState` + `.focused` |
-| **Geometry** | zoom scale, visible rect | up only, plus an initial value | `.onScrollGeometryChange`, `.defaultScrollAnchor` |
+| **Layout and geometry** | how the page sits in the view, zoom scale, visible rect | down (content mode), up (geometry) | `Image` + `.aspectRatio(contentMode:)`, `.onScrollGeometryChange` |
 | **Commands** | undo, insert shape, present insertion menu | one-shot | `UndoManager` in environment, `.popover(isPresented:)` |
 
 Every option below is judged by how cleanly it handles all four rows.
@@ -114,7 +114,7 @@ Sort each row to the SwiftUI pattern Apple already uses for it:
 - **Markup:** a value binding, like `TextEditor`.
 - **Configuration:** environment modifiers, like `.textFieldStyle`.
 - **Interaction state:** small value types bound by modifiers, like `@FocusState`.
-- **Geometry:** an initial-value modifier and a change callback, like `.defaultScrollAnchor` and `.onScrollGeometryChange`.
+- **Layout and geometry:** the editor fills its space like a resizable `Image`, a content mode places the page inside it, and a change callback reports zoom, like `.onScrollGeometryChange`.
 - **Commands:** mutating methods on those values, the standard `undoManager` environment value, and `isPresented` bindings.
 
 The full API is in Section 4.
@@ -138,7 +138,7 @@ struct NotesView: View {
         }
         .paperTool($tool)                      // two-way: tool picker writes back
         .paperSelection($selection)            // two-way, like .focused($field)
-        .defaultPaperZoom(.fit)                // like .defaultScrollAnchor
+        .paperContentMode(.fit)                // like Image .aspectRatio(contentMode:)
         .paperFeatures(.latest)                // config, down only
         .paperToolPicker(isVisible: true)      // system PKToolPicker
         .paperInsertionMenu(isPresented: $showInsertMenu)
@@ -168,8 +168,8 @@ Keep the list short and group by concern. Each is a plain `EnvironmentValues` en
 | `.paperEditingDisabled(_ :)` | editable flag |
 | `.paperRulerActive(_ :)` | ruler |
 | `.paperTouchPolicy(_ :)` | Pencil-only vs finger drawing |
-| `.paperZoomRange(_ :)` | min/max zoom |
-| `.defaultPaperZoom(_ :)` | initial zoom (`.fit`, `.actualSize`, or a scale) |
+| `.paperContentMode(_ :)` | how the page sits in the view at rest: SwiftUI's own `ContentMode` (`.fit`, `.fill`) |
+| `.paperZoomRange(_ :)` | min/max zoom, relative to the content mode's resting scale |
 | `.paperToolPicker(isVisible:)` | `PKToolPicker` visibility, observer wiring |
 
 `PaperFeatures` is our own `Hashable`, `Sendable` struct with static members (`.latest`, `.basic`) and modifiers (`.removing(.stickers)`), translated to `FeatureSet` in the bridge.
@@ -185,14 +185,25 @@ public struct PaperSelection: Hashable, Sendable {
 }
 ```
 
-### 4.4 Zoom and geometry
+### 4.4 Layout, zoom, and geometry
 
-No viewport type. The user owns zoom with their fingers, so the app rarely needs to drive it. Zoom splits into the three pieces SwiftUI already uses for scroll views:
+**The editor fills the space it is offered.** `PaperEditor` is greedy, like `Color`, `ScrollView`, or a `.resizable()` image. Constrain it with the modifiers you already use: `.frame`, `.padding`, or `.aspectRatio(markup.bounds.size, contentMode: .fit)` to make the view itself match the page shape.
+
+**The page has a fixed size, the view does not.** `Markup.bounds` is content, not layout, the same way an image's pixel size is. If bounds followed the view, rotating an iPad would resize the canvas and every stroke would land in the wrong place. A `Markup()` created without bounds adopts the editor's size on first layout, then stays fixed.
+
+**Content mode maps one to the other.** This is the `Image` model applied to paper, reusing SwiftUI's own `ContentMode` type:
+
+| Mode | At rest | Feels like |
+|---|---|---|
+| `.fit` (default) | Whole page visible, letterboxed | A sheet on a desk |
+| `.fill` | Page fills the view, overflow scrolls | A notes app or whiteboard |
+
+**Zoom is relative to the resting scale.** `zoomScale == 1` always means "at the content mode's resting size," on any device or orientation. That makes `.paperZoomRange(1...4)` portable and keeps app code free of point math. No viewport type is needed, since the user owns zoom with their fingers:
 
 ```swift
 PaperEditor(markup: $markup)
-    .paperZoomRange(0.5...4)                     // limits, like any config
-    .defaultPaperZoom(.fit)                      // initial value, like .defaultScrollAnchor
+    .paperContentMode(.fill)                     // resting placement, like Image
+    .paperZoomRange(1...4)                       // relative to the resting scale
     .onPaperGeometryChange(for: Bool.self) {     // read-back, like .onScrollGeometryChange
         $0.zoomScale > 1
     } action: { _, isZoomedIn in
@@ -200,7 +211,7 @@ PaperEditor(markup: $markup)
     }
 
 public struct PaperGeometry: Equatable, Sendable {
-    public var zoomScale: CGFloat
+    public var zoomScale: CGFloat      // 1 == resting scale for the content mode
     public var visibleRect: CGRect     // in canvas coordinates
     public var contentSize: CGSize
 }
@@ -366,7 +377,7 @@ Key decisions for `Markup`:
 - Converts between our value types and framework types (`PaperTool ↔ PKTool`, `PaperFeatures → FeatureSet`, `Markup ↔ PaperMarkup`).
 - Prevents feedback loops. It records the last `token` it pushed and the last it received. `updateUIViewController` only writes markup into the view controller when the binding's token differs from both, which means the change came from outside (load, undo from another view, sync).
 - Coalesces writes. Delegate change callbacks during an active stroke are batched so the binding updates once per stroke end, not per touch sample.
-- Applies the default zoom once, and reports geometry changes through the transform closure.
+- Computes the resting scale from the content mode on every layout change (rotation, split view), keeps the user's relative zoom across those changes, and reports geometry changes through the transform closure.
 
 Users never see this type. That is the point: all the density that tempted Option B is real, and it is handled here.
 
@@ -425,7 +436,7 @@ Platforms: iOS 26, iPadOS 26, macOS 26, visionOS 26 minimum (PaperKit's floor). 
 | **0. Spike** | Bare `PaperEditor(markup:)` on iPad, markup round-trips through `@State` | Draw, background, relaunch, markup restored |
 | **1. Model** | `PaperModel` types, `Codable`/`Hashable` tests, `PaperBridge` tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes |
 | **2. Core API** | `.paperTool`, `.paperFeatures`, `.paperToolPicker`, undo via environment, loop-safe coordinator | Tool picker and a SwiftUI button both change the tool with no flicker or loops |
-| **3. Interaction** | `PaperSelection`, `onPaperGeometryChange`, `defaultPaperZoom`, insertion menu, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
+| **3. Interaction** | `PaperSelection`, `onPaperGeometryChange`, `paperContentMode`, insertion menu, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
 | **4. Native UI** | `PaperToolbar` in pure SwiftUI, `PaperThumbnail` | Demo app ships without `PKToolPicker` |
 | **5. Platforms** | macOS (`MarkupToolbarViewController`), visionOS polish | Same demo runs on all three |
 
