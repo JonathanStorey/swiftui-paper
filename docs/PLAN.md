@@ -152,7 +152,7 @@ struct NotesView: View {
 
 Why this shape wins:
 
-- **The document is yours.** It lives in `@State`, a SwiftData `@Model`, or a `FileDocument`. Saving, previews, and tests touch a plain value.
+- **The markup is yours.** It lives in `@State`, a SwiftData `@Model`, or a `FileDocument`. Saving, previews, and tests touch a plain value.
 - **Each two-way piece is optional.** If you don't care about selection, don't bind it. `TextField` works the same way with `.focused`.
 - **Tools are values.** A custom SwiftUI palette and the system `PKToolPicker` can drive the same `@State var tool` at once, which makes a native SwiftUI toolbar a later add-on instead of a rewrite.
 - **Undo comes for free.** The editor registers with `@Environment(\.undoManager)`. Your Undo button calls `undoManager?.undo()` exactly as it would for any SwiftUI text view.
