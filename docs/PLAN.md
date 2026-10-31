@@ -191,7 +191,7 @@ public struct PaperSelection: Hashable, Sendable {
 
 **No `.aspectRatio` needed.** The page's shape comes from `Markup(paperSize:)` and its placement from `.paperContentMode`, so the standard `.aspectRatio` modifier plays no part in the normal design. It still behaves correctly if someone applies it (shrinking the editor's frame to the page shape), because the representable implements `sizeThatFits` and reports the page size as its ideal size.
 
-**The page has a fixed size, the view does not.** `Markup.bounds` is content, not layout, the same way an image's pixel size is. If bounds followed the view, rotating an iPad would resize the canvas and every stroke would land in the wrong place. You set the paper size when you create the markup:
+**The page has a fixed size, the view does not.** `Markup.paperSize` is content, not layout, the same way an image's pixel size is. If the paper size followed the view, rotating an iPad would resize the canvas and every stroke would land in the wrong place. You set the paper size when you create the markup:
 
 ```swift
 @State private var markup = Markup(paperSize: .letter)            // 8.5 × 11 in
@@ -206,6 +206,8 @@ public struct PaperSize: Hashable, Codable, Sendable {
     public var landscape: PaperSize { get }        // swaps width and height
 }
 ```
+
+**A size, not a rect.** `PaperSize` wraps a `CGSize`. Apple's `PaperMarkup(bounds:)` takes a `CGRect`, but the origin is always `.zero` for a page, so exposing a rect would only invite a meaningless choice. The bridge builds the rect internally. Changing `paperSize` after drawing extends or crops the page from the bottom-right without moving any strokes.
 
 **Units: points, stored as an absolute size.** Points (1/72 inch) are what `PaperMarkup` bounds, PencilKit stroke widths, and text box font sizes already use, and they map one to one onto PDF and print. A ratio alone is not enough: a 3 pt pen line looks fine on a 612 pt-wide letter page and invisible on a 6,000 pt-wide one, so the absolute size gives tool widths and text sizes their meaning. The ratio is derived, never stored, and there is deliberately no ratio-only constructor. `.inches` and `.millimeters` convert to points on creation, and an `init(width:height:)` taking `Measurement<UnitLength>` covers any other unit.
 
@@ -379,7 +381,8 @@ public struct PaperStrokePoint: Codable, Hashable, Sendable {
 
 ```swift
 public struct Markup: Codable, Hashable, Sendable, Transferable {
-    public var bounds: CGRect
+    public var paperSize: PaperSize   // public API is a size (CGSize inside)
+    var bounds: CGRect { CGRect(origin: .zero, size: paperSize.size) }   // what PaperKit takes
     var storage: Data            // PaperMarkup.dataRepresentation(), the source of truth
     var token: UUID              // regenerated on every change
 
@@ -405,7 +408,7 @@ Stable IDs still matter for anything outside the markup. An app can key its own 
 Key decisions for `Markup`:
 
 - **Edits go through the markup.** `insert` and `removeStrokes` mutate the blob, then invalidate the cached projections. Same mental model as editing a `String` and reading its `.count`.
-- **Cheap equality.** `==` returns true immediately when tokens match, and compares `bounds` and `storage` only when they differ. `hash` uses `bounds` and `storage.count`, which stays consistent with `==`.
+- **Cheap equality.** `==` returns true immediately when tokens match, and compares `paperSize` and `storage` only when they differ. `hash` uses `paperSize` and `storage.count`, which stays consistent with `==`.
 - **Rendering off-screen.** `Markup.image(scale:)` and an `ImageRenderer`-friendly `PaperThumbnail` view, built on the framework's draw-into-context API.
 
 ---
