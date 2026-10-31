@@ -216,6 +216,8 @@ public struct PaperSize: Hashable, Codable, Sendable {
 }
 ```
 
+**Units: points, stored as an absolute size.** Points (1/72 inch) are what `PaperMarkup` bounds, PencilKit stroke widths, and text box font sizes already use, and they map one to one onto PDF and print. A ratio alone is not enough: a 3 pt pen line looks fine on a 612 pt-wide letter page and invisible on a 6,000 pt-wide one, so the absolute size gives tool widths and text sizes their meaning. The ratio is derived, never stored. `.aspectRatio(_:)` is a convenience that picks a 612 pt width and computes the height. `.inches` and `.millimeters` convert to points on creation, and an `init(width:height:)` taking `Measurement<UnitLength>` covers any other unit.
+
 Static members follow the `Font` and `Color` pattern. Paper size belongs on the markup, not on a view modifier, because strokes are stored in page coordinates: the size has to travel with the content. A `Markup()` created with no size adopts the editor's size on first layout, then stays fixed.
 
 **Content mode maps one to the other.** This is the `Image` model applied to paper, reusing SwiftUI's own `ContentMode` type:
