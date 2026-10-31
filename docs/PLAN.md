@@ -198,7 +198,25 @@ PaperEditor(markup: $markup)
 
 This works with no ratio argument, exactly as it does on `Image`, because the representable implements `sizeThatFits`. It returns the proposed size when the parent offers one (so the editor stays greedy) and the page size when asked for its ideal size (which is what `.aspectRatio` reads). When the frame already matches the page, `.paperContentMode` has nothing left to do. The two modifiers answer different questions: `.aspectRatio` sets the shape of the box, and `.paperContentMode` places the page inside whatever box results.
 
-**The page has a fixed size, the view does not.** `Markup.bounds` is content, not layout, the same way an image's pixel size is. If bounds followed the view, rotating an iPad would resize the canvas and every stroke would land in the wrong place. A `Markup()` created without bounds adopts the editor's size on first layout, then stays fixed.
+**The page has a fixed size, the view does not.** `Markup.bounds` is content, not layout, the same way an image's pixel size is. If bounds followed the view, rotating an iPad would resize the canvas and every stroke would land in the wrong place. You set the paper size when you create the markup:
+
+```swift
+@State private var markup = Markup(paperSize: .letter)            // 8.5 × 11 in
+@State private var markup = Markup(paperSize: .a4)
+@State private var markup = Markup(paperSize: .inches(8.5, 10))   // custom
+@State private var markup = Markup(paperSize: .aspectRatio(4/3))  // shape only
+
+public struct PaperSize: Hashable, Codable, Sendable {
+    public var size: CGSize                        // points, 72 per inch
+    public static let letter, legal, a4, a5, square: PaperSize
+    public static func inches(_ w: Double, _ h: Double) -> PaperSize
+    public static func millimeters(_ w: Double, _ h: Double) -> PaperSize
+    public static func aspectRatio(_ ratio: CGFloat) -> PaperSize
+    public var landscape: PaperSize { get }        // swaps width and height
+}
+```
+
+Static members follow the `Font` and `Color` pattern. Paper size belongs on the markup, not on a view modifier, because strokes are stored in page coordinates: the size has to travel with the content. A `Markup()` created with no size adopts the editor's size on first layout, then stays fixed.
 
 **Content mode maps one to the other.** This is the `Image` model applied to paper, reusing SwiftUI's own `ContentMode` type:
 
@@ -208,6 +226,15 @@ This works with no ratio argument, exactly as it does on `Image`, because the re
 | `.fill` | Page fills the view, overflow scrolls | A notes app or whiteboard |
 
 With `.fill`, the overflow axis falls out of the two shapes. A tall page in a wide view overflows vertically, a wide page in a tall view overflows horizontally. Nobody picks the axis, which means the app also cannot know in advance which edge needs to show first.
+
+The rule is: compare the page's width÷height to the view's. If the page is relatively wider, it overflows horizontally. If it is relatively taller, it overflows vertically. A worked example with an 8.5 × 10 page (ratio 0.85) on an iPad:
+
+| Orientation | View ratio | Page vs view | `.fill` scrolls |
+|---|---|---|---|
+| Portrait | ≈ 0.75 | page is wider | horizontally, slightly |
+| Landscape | ≈ 1.33 | page is taller | vertically, a lot |
+
+That is often the reverse of what people expect, so the demo app should show it. Apps that want "match the width, always scroll vertically" (a notes app) need a width-matching mode rather than `.fill`. That is a possible later addition to `PaperContentMode`, not part of v1.
 
 **The anchor picks where the page sits at rest.** It is a plain `UnitPoint`, the same type `.defaultScrollAnchor` and `scaleEffect(anchor:)` use, so `.top`, `.topLeading`, and `.center` all work with no new vocabulary.
 
