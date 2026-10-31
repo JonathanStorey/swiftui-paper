@@ -168,7 +168,7 @@ Keep the list short and group by concern. Each is a plain `EnvironmentValues` en
 | `.paperEditingDisabled(_ :)` | editable flag |
 | `.paperRulerActive(_ :)` | ruler |
 | `.paperTouchPolicy(_ :)` | Pencil-only vs finger drawing |
-| `.paperContentMode(_ :)` | how the page sits in the view at rest: SwiftUI's own `ContentMode` (`.fit`, `.fill`) |
+| `.paperContentMode(_ :anchor:)` | how the page sits in the view at rest: SwiftUI's own `ContentMode` (`.fit`, `.fill`) plus a `UnitPoint` anchor (default `.center`) |
 | `.paperZoomRange(_ :)` | min/max zoom, relative to the content mode's resting scale |
 | `.paperToolPicker(isVisible:)` | `PKToolPicker` visibility, observer wiring |
 
@@ -207,11 +207,23 @@ This works with no ratio argument, exactly as it does on `Image`, because the re
 | `.fit` (default) | Whole page visible, letterboxed | A sheet on a desk |
 | `.fill` | Page fills the view, overflow scrolls | A notes app or whiteboard |
 
+With `.fill`, the overflow axis falls out of the two shapes. A tall page in a wide view overflows vertically, a wide page in a tall view overflows horizontally. Nobody picks the axis, which means the app also cannot know in advance which edge needs to show first.
+
+**The anchor picks where the page sits at rest.** It is a plain `UnitPoint`, the same type `.defaultScrollAnchor` and `scaleEffect(anchor:)` use, so `.top`, `.topLeading`, and `.center` all work with no new vocabulary.
+
+```swift
+.paperContentMode(.fill, anchor: .top)       // notes: start at the top of the page
+.paperContentMode(.fill, anchor: .leading)   // timeline: start at the left edge
+.paperContentMode(.fit, anchor: .top)        // letterboxed page pinned to the top
+```
+
+One anchor serves both modes. In `.fill` it sets the initial scroll position along whichever axis overflows. In `.fit` it decides where the letterbox space goes, just like `.frame(alignment:)` positions an `Image`. On rotation or resize the editor recomputes the resting scale and re-applies the anchor, unless the user has already scrolled or zoomed, in which case it keeps the same canvas point in view.
+
 **Zoom is relative to the resting scale.** `zoomScale == 1` always means "at the content mode's resting size," on any device or orientation. That makes `.paperZoomRange(1...4)` portable and keeps app code free of point math. No viewport type is needed, since the user owns zoom with their fingers:
 
 ```swift
 PaperEditor(markup: $markup)
-    .paperContentMode(.fill)                     // resting placement, like Image
+    .paperContentMode(.fill, anchor: .top)       // resting placement, like Image
     .paperZoomRange(1...4)                       // relative to the resting scale
     .onPaperGeometryChange(for: Bool.self) {     // read-back, like .onScrollGeometryChange
         $0.zoomScale > 1
