@@ -8,7 +8,7 @@ PaperKit is Apple's current home for Apple Pencil markup. It layers shapes, text
 
 This project wraps all of that in an API that feels like it shipped in SwiftUI itself:
 
-1. A single editor view that binds to a document value the way `TextEditor` binds to a `String`.
+1. A single editor view that binds to a markup value the way `TextEditor` binds to a `String`.
 2. Pure-Swift, `Codable`, `Hashable`, `Sendable` value types for tools, inks, colors, and strokes.
 3. Strokes with stable identity (`Identifiable`) built on the new stroke IDs.
 4. A module layout that keeps the model independent of UIKit so it can grow without rewrites.
@@ -23,7 +23,7 @@ PaperKit's surface splits into four kinds of state. The right packaging falls ou
 
 | Kind | Examples | Direction | SwiftUI precedent |
 |---|---|---|---|
-| **Document** | the markup itself | two-way | `TextEditor(text:)` |
+| **Markup** | the canvas content | two-way | `TextEditor(text:)` |
 | **Configuration** | feature set, editable, ruler, finger-draws policy, background content | down only | `.textFieldStyle`, `.disabled`, `.scrollDisabled` |
 | **Interaction state** | current tool, selection, viewport/zoom | two-way | `@FocusState` + `.focused`, `ScrollPosition` + `.scrollPosition` |
 | **Commands** | undo, insert shape, zoom to rect, present insertion menu | one-shot | `UndoManager` in environment, `ScrollPosition.scrollTo`, `.popover(isPresented:)` |
@@ -67,12 +67,12 @@ paper.undo()
 paper.insert(.shape(.rectangle))
 ```
 
-An `@Observable` class owns the document, tool, selection, viewport, and exposes command methods. This is the "coordinator in the environment" model.
+An `@Observable` class owns the markup, tool, selection, viewport, and exposes command methods. This is the "coordinator in the environment" model.
 
 **Strengths.** Two-way state and commands in one place. Easy to reach from a custom toolbar deep in the tree. Familiar to anyone who has written a view model.
 
 **Weaknesses.**
-- It hides ownership. The document lives inside a reference type instead of in your own `@State` or `@Model`, so saving, undo integration, and previews become harder.
+- It hides ownership. The markup lives inside a reference type instead of in your own `@State` or `@Model`, so saving, undo integration, and previews become harder.
 - It is a god object. Configuration that should be inherited declaratively becomes imperative mutation.
 - It does not match how Apple has evolved SwiftUI. Apple moved *away* from this shape: `ScrollViewReader`/`ScrollViewProxy` gave way to the `ScrollPosition` value type in iOS 18.
 - Multiple editors on screen require multiple contexts and careful scoping.
@@ -89,7 +89,7 @@ PaperEditor(paper: $paper)
 
 **Strengths.** Can manage lifetime of non-value resources (for example a retained `PKToolPicker`) the way `@FocusState` and `@Namespace` manage engine-owned state.
 
-**Weaknesses.** A custom `DynamicProperty` cannot participate in the engine the way `@FocusState` does. Underneath it is `@State` holding a reference, which is Option B with extra syntax. It also confuses readers about who owns the document.
+**Weaknesses.** A custom `DynamicProperty` cannot participate in the engine the way `@FocusState` does. Underneath it is `@State` holding a reference, which is Option B with extra syntax. It also confuses readers about who owns the markup.
 
 **Verdict.** No public custom property wrapper in v1. The legitimate need (owning the tool picker) is handled privately inside the representable's coordinator. Revisit only if a real lifetime problem appears that `@State` cannot solve.
 
@@ -110,7 +110,7 @@ Mirrors `ScrollViewReader`. Solves commands only, and copies a pattern Apple has
 
 Sort each row to the SwiftUI pattern Apple already uses for it:
 
-- **Document:** a value binding, like `TextEditor`.
+- **Markup:** a value binding, like `TextEditor`.
 - **Configuration:** environment modifiers, like `.textFieldStyle`.
 - **Interaction state:** small value types bound by modifiers, like `ScrollPosition` and `@FocusState`.
 - **Commands:** mutating methods on those values, the standard `undoManager` environment value, and `isPresented` bindings.
@@ -152,7 +152,7 @@ struct NotesView: View {
 
 Why this shape wins:
 
-- **The markup is yours.** It lives in `@State`, a SwiftData `@Model`, or a `FileDocument`. Saving, previews, and tests touch a plain value.
+- **The markup is yours.** It lives in `@State`, a SwiftData `@Model`, or wherever your app keeps data. Saving, previews, and tests touch a plain value.
 - **Each two-way piece is optional.** If you don't care about selection, don't bind it. `TextField` works the same way with `.focused`.
 - **Tools are values.** A custom SwiftUI palette and the system `PKToolPicker` can drive the same `@State var tool` at once, which makes a native SwiftUI toolbar a later add-on instead of a rewrite.
 - **Undo comes for free.** The editor registers with `@Environment(\.undoManager)`. Your Undo button calls `undoManager?.undo()` exactly as it would for any SwiftUI text view.
@@ -295,22 +295,21 @@ public struct PaperStrokePoint: Codable, Hashable, Sendable {
 
 `ID` wraps the framework's stroke identifier as a string so it survives encoding regardless of the underlying type. Stable IDs unlock the features that make this worth doing: `ForEach` over strokes in a layer list, selection that survives edits, per-stroke metadata dictionaries (`[PaperStroke.ID: Tag]`), and minimal diffs for sync and collaboration.
 
-### 5.4 Markup, elements, and documents
+### 5.4 Markup and its contents
 
-Three words, three layers. Each has one job.
+**Scope.** This package stops at the canvas. `PaperEditor` and the `Markup` value it binds to are the deliverable. Files, multi-page documents, and app metadata belong to the app that uses the package, which can store `Markup` values however it likes because they are `Codable`.
 
-**How PaperKit stores it.** Apple's `PaperMarkup` is a single value that holds the whole canvas: PencilKit ink strokes *and* the inserted elements (shapes, text boxes, images, lines), interleaved in one z-order, plus the canvas bounds. It persists as one opaque blob through `dataRepresentation()` and `init(dataRepresentation:)`. Elements are created through insert calls on the markup (`insertNewShape`, `insertNewTextbox`, `insertNewImage`, `insertNewLine`) and ink can be appended from a `PKDrawing`. There is no separate element file or element store. Elements have no existence outside a markup.
+**How PaperKit stores it.** Apple's `PaperMarkup` is a single value that holds the whole canvas: PencilKit ink strokes *and* the inserted elements (shapes, text boxes, images, lines), interleaved in one z-order, plus the canvas bounds. It persists as one opaque blob through `dataRepresentation()` and `init(dataRepresentation:)`. Elements are created through insert calls on the markup (`insertNewShape`, `insertNewTextbox`, `insertNewImage`, `insertNewLine`) and ink can be appended from a `PKDrawing`. Elements have no existence outside a markup.
 
-**Our layers.**
+**Our types.**
 
-| Layer | Our type | What it is | Stored? |
-|---|---|---|---|
-| **Document** | `PaperDocument` (Phase 4) | The file a user opens: one or more pages plus your app's metadata (title, tags, per-stroke notes keyed by ID) | Yes, as a `FileDocument` package |
-| **Markup** | `Markup` | One canvas. Wraps one Apple `PaperMarkup`. This is what `PaperEditor(markup:)` binds to | Yes, as Apple's blob |
-| **Strokes / elements** | `PaperStroke`, `PaperElement` | Read-only views of what is inside a markup | **No.** Derived on read |
+| Type | What it is | Stored? |
+|---|---|---|
+| `Markup` | One canvas. Wraps one Apple `PaperMarkup` and adds `Codable`, `Hashable`, and cheap equality. `PaperEditor(markup:)` binds to it | Yes, as Apple's blob |
+| `PaperStroke`, `PaperElement` | Read-only views of what is inside a markup | **No.** Derived on read |
 
 ```swift
-public struct Markup: Codable, Hashable, Sendable {
+public struct Markup: Codable, Hashable, Sendable, Transferable {
     public var bounds: CGRect
     var storage: Data            // PaperMarkup.dataRepresentation(), the source of truth
     var token: UUID              // regenerated on every change
@@ -320,27 +319,24 @@ public struct Markup: Codable, Hashable, Sendable {
     public mutating func insert(_ element: PaperElement.Template)
     public mutating func removeStrokes(_ ids: some Collection<PaperStroke.ID>)
 }
-
-public struct PaperDocument: Codable, Sendable {
-    public var pages: [Markup]
-    public var metadata: [String: String]
-    public var strokeNotes: [PaperStroke.ID: String]   // your data, keyed by stable ID
-}
 ```
 
-**Should strokes and elements be stored separately? No.** Three reasons:
+**Why not name it `PaperMarkup`?** Apple already owns that name. Any file that imports both PaperKit and our package would hit an ambiguous-type error, including our own bridge target. `Markup` reads naturally at the call site (`@State var markup = Markup()`), and the module name disambiguates it if needed (`PaperUI.Markup`).
 
-1. **Z-order lives in the markup.** A text box can sit above one stroke and below the next. Split them into two arrays and you have to invent and maintain an ordering scheme Apple already maintains for you.
-2. **Fidelity.** Apple's blob carries data we cannot see or reconstruct (rendering versions, element internals, future features). Rebuilding a markup from our own arrays would silently drop it.
-3. **Drift.** Two editable copies of the same content will disagree eventually. One source of truth means it never happens.
+**Why wrap Apple's type at all?** Apple's `PaperMarkup` is not `Codable` or `Hashable`. Adding those conformances retroactively to a type we don't own is fragile and draws compiler warnings. A thin wrapper also lets us give it fast equality, which `onChange(of:)` and SwiftUI diffing depend on.
 
-What *should* be separate is your own data. Anything PaperKit does not know about (titles, tags, notes on a stroke, layer names) goes in `PaperDocument` keyed by stroke or element ID. That is exactly what stable IDs are for: they let your data point *into* Apple's blob without living inside it.
+**Should strokes and elements be stored separately? No.**
+
+1. **Z-order lives in the markup.** A text box can sit above one stroke and below the next. Splitting them means inventing an ordering scheme Apple already maintains.
+2. **Fidelity.** Apple's blob carries data we cannot see or reconstruct. Rebuilding a markup from our own arrays would silently drop it.
+3. **Drift.** Two editable copies of the same content eventually disagree.
+
+Stable IDs still matter for anything outside the markup. An app can key its own data to a `PaperStroke.ID` without the package needing to know about it.
 
 Key decisions for `Markup`:
 
 - **Edits go through the markup.** `insert` and `removeStrokes` mutate the blob, then invalidate the cached projections. Same mental model as editing a `String` and reading its `.count`.
-- **Cheap equality.** `==` returns true immediately when tokens match, and compares `bounds` and `storage` only when they differ. `hash` uses `bounds` and `storage.count`, which stays consistent with `==`. This keeps `onChange(of: markup)` fast on large canvases.
-- **Persistence.** `Markup` conforms to `Transferable`. `PaperDocument` ships as a `FileDocument` with a custom `UTType`, so a document-based app is a few lines.
+- **Cheap equality.** `==` returns true immediately when tokens match, and compares `bounds` and `storage` only when they differ. `hash` uses `bounds` and `storage.count`, which stays consistent with `==`.
 - **Rendering off-screen.** `Markup.image(scale:)` and an `ImageRenderer`-friendly `PaperThumbnail` view, built on the framework's draw-into-context API.
 
 ---
@@ -371,7 +367,7 @@ swiftui-paper/
 │  │  ├─ Color/PaperColor.swift
 │  │  ├─ Tools/InkKind.swift, PaperInk.swift, PaperTool.swift
 │  │  ├─ Strokes/PaperStroke.swift, PaperStrokePoint.swift, PaperPath.swift
-│  │  ├─ Document/Markup.swift, PaperElement.swift, PaperDocument.swift
+│  │  ├─ Markup/Markup.swift, PaperElement.swift
 │  │  └─ State/PaperSelection.swift, PaperViewport.swift, PaperFeatures.swift
 │  ├─ PaperBridge/         # PaperKit + PencilKit conversions, internal
 │  │  ├─ PKTool+PaperTool.swift
@@ -385,12 +381,12 @@ swiftui-paper/
 │  │  ├─ Modifiers/Config.swift, Bindings.swift, Events.swift
 │  │  ├─ Environment/PaperEnvironmentKeys.swift
 │  │  └─ Views/PaperThumbnail.swift, PaperToolbar.swift (Phase 4)
-│  └─ PaperTesting/        # fixtures, sample documents, snapshot helpers
+│  └─ PaperTesting/        # fixtures, sample markups, snapshot helpers
 ├─ Tests/
 │  ├─ PaperModelTests/     # Codable round-trips, Hashable laws, forward-compat decoding
 │  ├─ PaperBridgeTests/    # lossless PK ↔ Paper conversions
 │  └─ PaperUITests/        # coordinator loop prevention, viewport requests
-├─ Demo/SwiftPaperDemo/    # app target: notes, document app, custom toolbar
+├─ Demo/SwiftPaperDemo/    # app target: single-canvas sketch app, custom toolbar
 └─ docs/PLAN.md
 ```
 
@@ -409,11 +405,11 @@ Platforms: iOS 26, iPadOS 26, macOS 26, visionOS 26 minimum (PaperKit's floor). 
 
 | Phase | Deliverable | Done when |
 |---|---|---|
-| **0. Spike** | Bare `PaperEditor(markup:)` on iPad, document round-trips through `@State` | Draw, background, relaunch, markup restored |
+| **0. Spike** | Bare `PaperEditor(markup:)` on iPad, markup round-trips through `@State` | Draw, background, relaunch, markup restored |
 | **1. Model** | `PaperModel` types, `Codable`/`Hashable` tests, `PaperBridge` tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes |
 | **2. Core API** | `.paperTool`, `.paperFeatures`, `.paperToolPicker`, undo via environment, loop-safe coordinator | Tool picker and a SwiftUI button both change the tool with no flicker or loops |
 | **3. Interaction** | `PaperSelection`, `PaperViewport`, insertion menu, `onPaperDrawingBegan` | Selection survives edits by stroke ID; `zoomToFit()` works |
-| **4. Native UI** | `PaperToolbar` in pure SwiftUI, `PaperThumbnail`, `FileDocument` helper | Demo document app ships without `PKToolPicker` |
+| **4. Native UI** | `PaperToolbar` in pure SwiftUI, `PaperThumbnail` | Demo app ships without `PKToolPicker` |
 | **5. Platforms** | macOS (`MarkupToolbarViewController`), visionOS polish | Same demo runs on all three |
 
 ---
@@ -422,7 +418,7 @@ Platforms: iOS 26, iPadOS 26, macOS 26, visionOS 26 minimum (PaperKit's floor). 
 
 1. **Stroke ID access.** The plan assumes the new stroke IDs are readable and stable across `dataRepresentation()` round-trips. Phase 1 must prove this with a test before anything depends on it.
 2. **Element model depth.** PaperKit may not expose shapes, text boxes, and images as inspectable values. If not, `PaperElement` starts as an opaque ID plus bounds and grows as Apple opens the model.
-3. **Large-document performance.** Re-serializing on every stroke end may be too slow for very large pages. Fallback: keep `PaperMarkup` live in the coordinator and serialize lazily on read of `storage`.
+3. **Large-canvas performance.** Re-serializing on every stroke end may be too slow for very large pages. Fallback: keep `PaperMarkup` live in the coordinator and serialize lazily on read of `storage`.
 4. **HDR color fidelity.** Confirm `Color.Resolved` linear components preserve values above 1.0 through encoding.
 5. **Tool picker ownership.** `PKToolPicker` is per-window. Two editors in one window must share one picker. The coordinator should look up an existing picker for the window before creating one.
 
@@ -430,8 +426,8 @@ Platforms: iOS 26, iPadOS 26, macOS 26, visionOS 26 minimum (PaperKit's floor). 
 
 ## 10. Recommendation
 
-Build **Option E**. Bind the document like `TextEditor`, configure with environment modifiers like `.textFieldStyle`, bind tool, selection, and viewport as small value types like `ScrollPosition` and `@FocusState`, and route undo through the standard `undoManager`. Keep the coordinator, but keep it private. Skip custom property wrappers and reader/proxy types.
+Build **Option E**. Bind the markup like `TextEditor`, configure with environment modifiers like `.textFieldStyle`, bind tool, selection, and viewport as small value types like `ScrollPosition` and `@FocusState`, and route undo through the standard `undoManager`. Keep the coordinator, but keep it private. Skip custom property wrappers and reader/proxy types.
 
-The case is simple. Every piece of this API already has a SwiftUI precedent, so a developer who knows SwiftUI already knows how to use it. The document stays in the developer's hands as a plain value, which is what makes `Codable` persistence, previews, and testing trivial. Tools as value types are the quiet multiplier: they let a pure SwiftUI toolbar, saved favorites, and sync all share one `@State` without touching PencilKit. A public `PaperContext` would have been faster to write and slower to live with, and Apple's own retreat from `ScrollViewReader` to `ScrollPosition` shows which direction SwiftUI is heading.
+The case is simple. Every piece of this API already has a SwiftUI precedent, so a developer who knows SwiftUI already knows how to use it. The markup stays in the developer's hands as a plain value, which is what makes `Codable` persistence, previews, and testing trivial. Tools as value types are the quiet multiplier: they let a pure SwiftUI toolbar, saved favorites, and sync all share one `@State` without touching PencilKit. A public `PaperContext` would have been faster to write and slower to live with, and Apple's own retreat from `ScrollViewReader` to `ScrollPosition` shows which direction SwiftUI is heading.
 
 Start with Phase 0 this week. Its only job is to prove that a `Markup` value survives the round-trip through the coordinator without loops, because everything else in this plan rests on that.
