@@ -234,7 +234,7 @@ The rule is: compare the page's width÷height to the view's. If the page is rela
 | Portrait | ≈ 0.75 | page is wider | horizontally, slightly |
 | Landscape | ≈ 1.33 | page is taller | vertically, a lot |
 
-That is often the reverse of what people expect, so the demo app should show it. Apps that want "match the width, always scroll vertically" (a notes app) need a width-matching mode rather than `.fill`. That is a possible later addition to `PaperContentMode`, not part of v1.
+That is often the reverse of what people expect, so the demo app should show it. Apps that want "match the width, always scroll vertically" (a notes app) need a width-matching mode rather than `.fill`. Supporting it would mean replacing SwiftUI's `ContentMode` with our own enum, so it stays out of v1.
 
 **The anchor picks where the page sits at rest.** It is a plain `UnitPoint`, the same type `.defaultScrollAnchor` and `scaleEffect(anchor:)` use, so `.top`, `.topLeading`, and `.center` all work with no new vocabulary.
 
