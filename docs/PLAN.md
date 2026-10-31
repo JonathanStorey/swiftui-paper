@@ -25,8 +25,9 @@ PaperKit's surface splits into four kinds of state. The right packaging falls ou
 |---|---|---|---|
 | **Markup** | the canvas content | two-way | `TextEditor(text:)` |
 | **Configuration** | feature set, editable, ruler, finger-draws policy, background content | down only | `.textFieldStyle`, `.disabled`, `.scrollDisabled` |
-| **Interaction state** | current tool, selection, viewport/zoom | two-way | `@FocusState` + `.focused`, `ScrollPosition` + `.scrollPosition` |
-| **Commands** | undo, insert shape, zoom to rect, present insertion menu | one-shot | `UndoManager` in environment, `ScrollPosition.scrollTo`, `.popover(isPresented:)` |
+| **Interaction state** | current tool, selection | two-way | `@FocusState` + `.focused` |
+| **Geometry** | zoom scale, visible rect | up only, plus an initial value | `.onScrollGeometryChange`, `.defaultScrollAnchor` |
+| **Commands** | undo, insert shape, present insertion menu | one-shot | `UndoManager` in environment, `.popover(isPresented:)` |
 
 Every option below is judged by how cleanly it handles all four rows.
 
@@ -67,7 +68,7 @@ paper.undo()
 paper.insert(.shape(.rectangle))
 ```
 
-An `@Observable` class owns the markup, tool, selection, viewport, and exposes command methods. This is the "coordinator in the environment" model.
+An `@Observable` class owns the markup, tool, selection, zoom, and exposes command methods. This is the "coordinator in the environment" model.
 
 **Strengths.** Two-way state and commands in one place. Easy to reach from a custom toolbar deep in the tree. Familiar to anyone who has written a view model.
 
@@ -112,7 +113,8 @@ Sort each row to the SwiftUI pattern Apple already uses for it:
 
 - **Markup:** a value binding, like `TextEditor`.
 - **Configuration:** environment modifiers, like `.textFieldStyle`.
-- **Interaction state:** small value types bound by modifiers, like `ScrollPosition` and `@FocusState`.
+- **Interaction state:** small value types bound by modifiers, like `@FocusState`.
+- **Geometry:** an initial-value modifier and a change callback, like `.defaultScrollAnchor` and `.onScrollGeometryChange`.
 - **Commands:** mutating methods on those values, the standard `undoManager` environment value, and `isPresented` bindings.
 
 The full API is in Section 4.
@@ -128,7 +130,6 @@ struct NotesView: View {
     @State private var markup = Markup()
     @State private var tool: PaperTool = .pen(.black, width: 3)
     @State private var selection = PaperSelection()
-    @State private var viewport = PaperViewport()
     @State private var showInsertMenu = false
 
     var body: some View {
@@ -137,14 +138,13 @@ struct NotesView: View {
         }
         .paperTool($tool)                      // two-way: tool picker writes back
         .paperSelection($selection)            // two-way, like .focused($field)
-        .paperViewport($viewport)              // two-way, like .scrollPosition($pos)
+        .defaultPaperZoom(.fit)                // like .defaultScrollAnchor
         .paperFeatures(.latest)                // config, down only
         .paperToolPicker(isVisible: true)      // system PKToolPicker
         .paperInsertionMenu(isPresented: $showInsertMenu)
         .paperEditingDisabled(false)
         .toolbar {
             Button("Insert", systemImage: "plus") { showInsertMenu = true }
-            Button("Fit") { viewport.zoomToFit() }
         }
     }
 }
@@ -156,7 +156,7 @@ Why this shape wins:
 - **Each two-way piece is optional.** If you don't care about selection, don't bind it. `TextField` works the same way with `.focused`.
 - **Tools are values.** A custom SwiftUI palette and the system `PKToolPicker` can drive the same `@State var tool` at once, which makes a native SwiftUI toolbar a later add-on instead of a rewrite.
 - **Undo comes for free.** The editor registers with `@Environment(\.undoManager)`. Your Undo button calls `undoManager?.undo()` exactly as it would for any SwiftUI text view.
-- **Commands are value mutations.** `viewport.zoomToFit()` mirrors `ScrollPosition.scrollTo(edge:)`. `markup.insert(.shape(.rectangle))` mirrors appending to a string.
+- **Commands are value mutations.** `markup.insert(.shape(.rectangle))` mirrors appending to a string.
 
 ### 4.2 Configuration modifiers (environment)
 
@@ -169,6 +169,7 @@ Keep the list short and group by concern. Each is a plain `EnvironmentValues` en
 | `.paperRulerActive(_ :)` | ruler |
 | `.paperTouchPolicy(_ :)` | Pencil-only vs finger drawing |
 | `.paperZoomRange(_ :)` | min/max zoom |
+| `.defaultPaperZoom(_ :)` | initial zoom (`.fit`, `.actualSize`, or a scale) |
 | `.paperToolPicker(isVisible:)` | `PKToolPicker` visibility, observer wiring |
 
 `PaperFeatures` is our own `Hashable`, `Sendable` struct with static members (`.latest`, `.basic`) and modifiers (`.removing(.stickers)`), translated to `FeatureSet` in the bridge.
@@ -182,18 +183,34 @@ public struct PaperSelection: Hashable, Sendable {
     public var isEmpty: Bool { strokeIDs.isEmpty && elementIDs.isEmpty }
     public mutating func clear()
 }
+```
 
-public struct PaperViewport: Hashable, Sendable {
-    public internal(set) var visibleRect: CGRect?   // reported by the editor
-    public internal(set) var zoomScale: CGFloat?
-    public mutating func zoom(to rect: CGRect, animated: Bool = true)
-    public mutating func zoomToFit()
+### 4.4 Zoom and geometry
+
+No viewport type. The user owns zoom with their fingers, so the app rarely needs to drive it. Zoom splits into the three pieces SwiftUI already uses for scroll views:
+
+```swift
+PaperEditor(markup: $markup)
+    .paperZoomRange(0.5...4)                     // limits, like any config
+    .defaultPaperZoom(.fit)                      // initial value, like .defaultScrollAnchor
+    .onPaperGeometryChange(for: Bool.self) {     // read-back, like .onScrollGeometryChange
+        $0.zoomScale > 1
+    } action: { _, isZoomedIn in
+        showsResetButton = isZoomedIn
+    }
+
+public struct PaperGeometry: Equatable, Sendable {
+    public var zoomScale: CGFloat
+    public var visibleRect: CGRect     // in canvas coordinates
+    public var contentSize: CGSize
 }
 ```
 
-`PaperViewport` copies the `ScrollPosition` trick: a mutating method records a pending request, the representable consumes it in `updateUIViewController`, then clears it. Read-back fields are `internal(set)` so only the editor writes them.
+The transform closure means the action fires only when the value you care about changes, not on every pinch frame. That matches how `onScrollGeometryChange` keeps scroll observation cheap.
 
-### 4.4 Events
+Programmatic zoom (zoom to a rect, zoom to the selection) is **out of v1**. If a real use case appears, the Swifty answer is a binding, `.paperZoom($scale)`, mirroring `.scrollPosition(id:)`. A value with pending-command methods and read-only fields is what we are avoiding.
+
+### 4.5 Events
 
 Use the SwiftUI `onChange`/callback idiom rather than a delegate:
 
@@ -349,7 +366,7 @@ Key decisions for `Markup`:
 - Converts between our value types and framework types (`PaperTool ↔ PKTool`, `PaperFeatures → FeatureSet`, `Markup ↔ PaperMarkup`).
 - Prevents feedback loops. It records the last `token` it pushed and the last it received. `updateUIViewController` only writes markup into the view controller when the binding's token differs from both, which means the change came from outside (load, undo from another view, sync).
 - Coalesces writes. Delegate change callbacks during an active stroke are batched so the binding updates once per stroke end, not per touch sample.
-- Consumes pending `PaperViewport` requests and writes back the visible rect.
+- Applies the default zoom once, and reports geometry changes through the transform closure.
 
 Users never see this type. That is the point: all the density that tempted Option B is real, and it is handled here.
 
@@ -368,7 +385,7 @@ swiftui-paper/
 │  │  ├─ Tools/InkKind.swift, PaperInk.swift, PaperTool.swift
 │  │  ├─ Strokes/PaperStroke.swift, PaperStrokePoint.swift, PaperPath.swift
 │  │  ├─ Markup/Markup.swift, PaperElement.swift
-│  │  └─ State/PaperSelection.swift, PaperViewport.swift, PaperFeatures.swift
+│  │  └─ State/PaperSelection.swift, PaperGeometry.swift, PaperFeatures.swift
 │  ├─ PaperBridge/         # PaperKit + PencilKit conversions, internal
 │  │  ├─ PKTool+PaperTool.swift
 │  │  ├─ PKStroke+PaperStroke.swift
@@ -385,7 +402,7 @@ swiftui-paper/
 ├─ Tests/
 │  ├─ PaperModelTests/     # Codable round-trips, Hashable laws, forward-compat decoding
 │  ├─ PaperBridgeTests/    # lossless PK ↔ Paper conversions
-│  └─ PaperUITests/        # coordinator loop prevention, viewport requests
+│  └─ PaperUITests/        # coordinator loop prevention, geometry reporting
 ├─ Demo/SwiftPaperDemo/    # app target: single-canvas sketch app, custom toolbar
 └─ docs/PLAN.md
 ```
@@ -408,7 +425,7 @@ Platforms: iOS 26, iPadOS 26, macOS 26, visionOS 26 minimum (PaperKit's floor). 
 | **0. Spike** | Bare `PaperEditor(markup:)` on iPad, markup round-trips through `@State` | Draw, background, relaunch, markup restored |
 | **1. Model** | `PaperModel` types, `Codable`/`Hashable` tests, `PaperBridge` tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes |
 | **2. Core API** | `.paperTool`, `.paperFeatures`, `.paperToolPicker`, undo via environment, loop-safe coordinator | Tool picker and a SwiftUI button both change the tool with no flicker or loops |
-| **3. Interaction** | `PaperSelection`, `PaperViewport`, insertion menu, `onPaperDrawingBegan` | Selection survives edits by stroke ID; `zoomToFit()` works |
+| **3. Interaction** | `PaperSelection`, `onPaperGeometryChange`, `defaultPaperZoom`, insertion menu, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
 | **4. Native UI** | `PaperToolbar` in pure SwiftUI, `PaperThumbnail` | Demo app ships without `PKToolPicker` |
 | **5. Platforms** | macOS (`MarkupToolbarViewController`), visionOS polish | Same demo runs on all three |
 
@@ -426,7 +443,7 @@ Platforms: iOS 26, iPadOS 26, macOS 26, visionOS 26 minimum (PaperKit's floor). 
 
 ## 10. Recommendation
 
-Build **Option E**. Bind the markup like `TextEditor`, configure with environment modifiers like `.textFieldStyle`, bind tool, selection, and viewport as small value types like `ScrollPosition` and `@FocusState`, and route undo through the standard `undoManager`. Keep the coordinator, but keep it private. Skip custom property wrappers and reader/proxy types.
+Build **Option E**. Bind the markup like `TextEditor`, configure with environment modifiers like `.textFieldStyle`, bind tool and selection as small value types like `@FocusState`, observe zoom like `onScrollGeometryChange`, and route undo through the standard `undoManager`. Keep the coordinator, but keep it private. Skip custom property wrappers and reader/proxy types.
 
 The case is simple. Every piece of this API already has a SwiftUI precedent, so a developer who knows SwiftUI already knows how to use it. The markup stays in the developer's hands as a plain value, which is what makes `Codable` persistence, previews, and testing trivial. Tools as value types are the quiet multiplier: they let a pure SwiftUI toolbar, saved favorites, and sync all share one `@State` without touching PencilKit. A public `PaperContext` would have been faster to write and slower to live with, and Apple's own retreat from `ScrollViewReader` to `ScrollPosition` shows which direction SwiftUI is heading.
 
