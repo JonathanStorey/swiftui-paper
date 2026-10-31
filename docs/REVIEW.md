@@ -2,6 +2,8 @@
 
 **Reviewed:** PLAN.md as of 2026-10-31 (Option E locked in) · **Verdict:** The API shape is sound. The model layer has two structural contradictions that must be fixed before Phase 1, and several assumptions about PaperKit need to be proven in the Phase 0 spike rather than later.
 
+> **Update:** All findings below were applied in PLAN.md v1.2.
+
 Findings are ranked by how much rework they would cause if discovered late.
 
 ---
