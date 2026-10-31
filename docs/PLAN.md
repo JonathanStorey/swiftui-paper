@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.4, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.5, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -410,6 +410,7 @@ public struct Markup: Codable, Hashable, Sendable, Transferable {
     public var elements: [PaperElement] { get }    // decoded on first read, cached
     public mutating func insert(_ element: PaperElement.Template, in rect: CGRect)
     public mutating func append(_ other: Markup)
+    public mutating func rotate(_ turn: PaperRotation)   // right-angle increments, see below
     public mutating func remove(_ ids: some Collection<PaperElement.ID>)   // pending Phase 0
 
     public func data() async throws -> Data        // wraps async dataRepresentation()
@@ -424,6 +425,19 @@ Key decisions:
 - **`Codable` with an async source.** `encode(to:)` is synchronous but `dataRepresentation()` is async, so `Markup` keeps a serialized snapshot that the coordinator refreshes in the background after each stroke, and `encode(to:)` writes that snapshot. Apps that need guaranteed-fresh bytes call `try await markup.data()`. Decoding is simple because `init(dataRepresentation:)` is synchronous.
 - **Projections are cached safely.** `strokes` and `elements` decode once per token and are stored in a private `final class` box guarded by a `Mutex`. Mutations replace the box (copy-on-write), so copies never share stale caches and the type stays `Sendable`.
 - **Cheap equality.** `==` returns true immediately when tokens match. Otherwise it falls back to Apple's own `Equatable` conformance on `PaperMarkup`. `hash` uses `paperSize` only, which is coarse but always consistent with `==`.
+- **Rotation is a content edit, in right angles only.** `markup.rotate(.clockwise)` turns the page the way Preview's Rotate Left/Right does: the paper size swaps width and height, and every stroke and element turns with it. Because the page is truly rotated, it saves, exports, and prints rotated with no extra orientation flag to track.
+
+  ```swift
+  public enum PaperRotation: Hashable, Sendable, CaseIterable {
+      case clockwise, counterclockwise, halfTurn
+  }
+
+  markup.rotate(.clockwise)          // letter portrait → letter landscape, content turned 90°
+  ```
+
+  Implementation uses two documented pieces: `transformContent(_:)` with a 90° rotation plus a translation back into positive coordinates, then the `paperSize` setter to swap the dimensions. Right angles keep it lossless: points land on exact coordinates, the page stays a rectangle, and four quarter turns return the original. Stroke UUIDs survive transforms per Apple, so selection and app data keyed by ID stay valid. In the editor, rotation is a binding write like any other markup change, so the coordinator re-applies the content mode and anchor, and the app registers undo for it. Free-angle rotation is deliberately excluded: it would leave the page a non-rectangle or force a bounding box that grows on every turn.
+
+  A display-only rotation (turning the view while the page stays put, for comfortable drawing) would be a separate view modifier. It is not in v1.
 - **Inserts take a rect.** A value has no idea what is on screen, so `insert` requires a position in page coordinates, matching Apple's `insertNewShape(configuration:frame:rotation:)` family. "Insert where the user is looking" goes through the editor, which uses `suggestedFrameForInserting(contentInFrame:)`.
 - **Removal is unconfirmed.** The documented `PaperMarkup` API can insert, append, and transform, but shows no remove method. Removal may work by mutating `subelements`. Until Phase 0 confirms it, `remove(_:)` is provisional.
 - **Name.** Apple owns `PaperMarkup`, so ours is `Markup`, disambiguated as `PaperUI.Markup` if ever needed.
@@ -497,7 +511,7 @@ Platforms: iOS 27, iPadOS 27, macOS 27, and visionOS 27 minimum. PaperKit itself
 | Phase | Deliverable | Done when |
 |---|---|---|
 | **0. Spike** | Bare `PaperEditor(markup:)` on iPad that answers the checks in Section 9.2 | Markup round-trips through `@State` without loops; strokes found in `subelements` with UUIDs that survive save; selection can (or provably cannot) be set; `bounds` setter behavior known; `.fitWidth` + `.top` anchor works |
-| **1. Model** | `PaperModel` types, `Markup` in `PaperCore`, `Codable`/`Hashable` tests, tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes; stroke IDs survive save and reload; `paperSize` get/set round-trips |
+| **1. Model** | `PaperModel` types, `Markup` in `PaperCore`, `Codable`/`Hashable` tests, tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes; stroke IDs survive save and reload; `paperSize` get/set round-trips; four quarter turns return an equal markup with the same IDs |
 | **2. Core API** | `.paperTool`, `.paperFeatures`, `.paperToolPicker(isPresented:)`, `.disabled`, `.paperContentMode`, `.paperZoomRange`, loop-safe coordinator | Tool picker and a SwiftUI button both change the tool with no flicker; all four content modes behave through rotation |
 | **3. Interaction** | Selection (binding or callback per Phase 0), async `PaperThumbnail`, `onPaperGeometryChange`, insertion menu, `Image` backgrounds, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
 | **4. Native UI** | `PaperToolbar` in pure SwiftUI, `PaperThumbnail` | Demo app ships without `PKToolPicker` |
@@ -530,7 +544,7 @@ Checked against Apple's PaperKit reference pages and the WWDC26 PencilKit sessio
 1. **Ink inside `subelements`.** Do strokes appear in `MarkupOrderedSet`, and do they carry the iOS 27 stroke UUIDs? This decides whether `Markup.strokes` is possible.
 2. **Stroke ID stability across save.** Do UUIDs survive `dataRepresentation()` → `init(dataRepresentation:)`?
 3. **Selection setter.** Can we assign `selection` programmatically? If not, selection ships as a callback.
-4. **`bounds` setter.** Settable directly, or must the `paperSize` setter rebuild the markup?
+4. **`bounds` setter.** Settable directly, or must the `paperSize` setter rebuild the markup? Rotation depends on this too.
 5. **Removal.** Can elements and strokes be removed by mutating `subelements`, since `PaperMarkup` documents no remove method?
 6. **Content modes on `setContentVisibleFrame`.** Confirm `.fitWidth` + `.top` anchor and resting-scale zoom can be built on it, and what `ScrollConfiguration` exposes.
 
