@@ -187,7 +187,16 @@ public struct PaperSelection: Hashable, Sendable {
 
 ### 4.4 Layout, zoom, and geometry
 
-**The editor fills the space it is offered.** `PaperEditor` is greedy, like `Color`, `ScrollView`, or a `.resizable()` image. Constrain it with the modifiers you already use: `.frame`, `.padding`, or `.aspectRatio(markup.bounds.size, contentMode: .fit)` to make the view itself match the page shape.
+**The editor fills the space it is offered.** `PaperEditor` is greedy, like `Color`, `ScrollView`, or a `.resizable()` image. Constrain it with the modifiers you already use: `.frame`, `.padding`, `.aspectRatio`.
+
+**`.aspectRatio` shapes the view, not the page.** It is SwiftUI's standard modifier, and we don't override it. It changes the editor's frame to match the page shape, so there is no empty margin around the page:
+
+```swift
+PaperEditor(markup: $markup)
+    .aspectRatio(contentMode: .fit)   // frame takes the page's shape, letterboxed by the parent
+```
+
+This works with no ratio argument, exactly as it does on `Image`, because the representable implements `sizeThatFits`. It returns the proposed size when the parent offers one (so the editor stays greedy) and the page size when asked for its ideal size (which is what `.aspectRatio` reads). When the frame already matches the page, `.paperContentMode` has nothing left to do. The two modifiers answer different questions: `.aspectRatio` sets the shape of the box, and `.paperContentMode` places the page inside whatever box results.
 
 **The page has a fixed size, the view does not.** `Markup.bounds` is content, not layout, the same way an image's pixel size is. If bounds followed the view, rotating an iPad would resize the canvas and every stroke would land in the wrong place. A `Markup()` created without bounds adopts the editor's size on first layout, then stays fixed.
 
