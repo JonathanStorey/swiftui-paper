@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.3, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.4, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -15,7 +15,7 @@ This project wraps all of that in an API that feels like it shipped in SwiftUI i
 
 **Scope.** The package stops at the canvas. `PaperEditor` and the `Markup` value it binds to are the deliverable. Files, multi-page documents, and app metadata belong to the app that uses the package.
 
-> **Verify against the SDK.** Type names below that start with `PK` or `Paper` and are not ours (`PaperMarkup`, `FeatureSet`, `PKInkingTool`, `PKStroke`) refer to Apple's frameworks. Exact member names and signatures, especially whether `dataRepresentation()` is `async`, must be checked against the current SDK headers in Phase 0. The architecture does not depend on any single member name.
+> **Verify against the SDK.** Type names below that start with `PK` or `Paper` and are not ours (`PaperMarkup`, `FeatureSet`, `PKInkingTool`, `PKStroke`) refer to Apple's frameworks. Signatures confirmed from Apple's documentation are marked in Section 9.1. The rest must be checked against the SDK headers in Phase 0. The architecture does not depend on any single member name.
 
 ---
 
@@ -190,7 +190,7 @@ public struct PaperSelection: Hashable, Sendable {
 }
 ```
 
-**Selection direction depends on PaperKit.** PaperKit reports selection changes. Setting the selection programmatically by ID may not be public. Phase 0 checks this. If it is report-only, v1 ships `onPaperSelectionChange { selection in }` instead of a binding, and the binding arrives when the framework allows it. Shipping a binding that silently ignores writes would be worse than shipping no binding.
+**Selection direction depends on PaperKit.** `PaperMarkupViewController.selection` is a `Set<MarkupOrderedSet.ElementID>` covering strokes and elements alike, which is why `PaperSelection` holds one set. The docs do not say whether it is settable (PencilKit's own canvas selection became settable in iOS 27). Phase 0 checks this. If it is report-only, v1 ships `onPaperSelectionChange { selection in }` instead of a binding, and the binding arrives when the framework allows it. Shipping a binding that silently ignores writes would be worse than shipping no binding.
 
 ### 4.4 Layout, zoom, and geometry
 
@@ -260,11 +260,11 @@ The transform closure means the action fires only when the value you care about 
 
 Programmatic zoom (zoom to a rect, zoom to the selection) is **out of v1**. If a real use case appears, the Swifty answer is a binding, `.paperZoom($scale)`.
 
-**This whole section depends on controlling PaperKit's scroll view.** `PaperMarkupViewController` owns its scrolling internally. We may only get a zoom range and a visible-frame callback, not content insets or offsets. Phase 0 proves `.fitWidth` + anchor works. If it can't be done through the view controller, the fallback is hosting the view controller inside our own `UIScrollView`, and the last resort is shipping `.fit` only in v1.
+**Built on documented API.** `PaperMarkupViewController` exposes `zoomRange`, `contentVisibleFrame`, `setContentVisibleFrame(_:animated:)`, and a `scrollConfiguration`. Content modes and anchors become arithmetic: compute the page rect that should be visible at rest and call `setContentVisibleFrame`. `PaperGeometry.visibleRect` reads `contentVisibleFrame`. Phase 0 confirms the behavior through rotation; hosting our own `UIScrollView` stays as an unlikely fallback.
 
 ### 4.5 Undo
 
-The editor uses the view controller's own undo stack and exposes it through SwiftUI's `\.undoManager`, so an Undo button calls `undoManager?.undo()` as it would for a text view. One honest limit: changes the app writes into the `markup` binding (loading, sync, programmatic inserts) bypass the drawing undo stack. They are undoable only if the app registers them itself. Phase 0 confirms how PaperKit's undo stack and SwiftUI's environment value connect.
+The editor uses the view controller's own `undoManager` (documented on `PaperMarkupViewController`) and exposes it through SwiftUI's `\.undoManager`, so an Undo button calls `undoManager?.undo()` as it would for a text view. One honest limit: changes the app writes into the `markup` binding (loading, sync, programmatic inserts) bypass the drawing undo stack. They are undoable only if the app registers them itself.
 
 ### 4.6 Events
 
@@ -409,23 +409,26 @@ public struct Markup: Codable, Hashable, Sendable, Transferable {
     public var strokes: [PaperStroke] { get }      // decoded on first read, cached
     public var elements: [PaperElement] { get }    // decoded on first read, cached
     public mutating func insert(_ element: PaperElement.Template, in rect: CGRect)
-    public mutating func removeStrokes(_ ids: some Collection<PaperStroke.ID>)
+    public mutating func append(_ other: Markup)
+    public mutating func remove(_ ids: some Collection<PaperElement.ID>)   // pending Phase 0
 
-    public func data() async throws -> Data        // explicit serialization
+    public func data() async throws -> Data        // wraps async dataRepresentation()
+    public func image(scale: CGFloat) async -> CGImage   // wraps async draw(in:frame:options:)
 }
 ```
 
 Key decisions:
 
 - **One source of truth, including size.** `paperSize` reads and writes the wrapped `PaperMarkup`'s bounds. Nothing is stored twice. If Apple's bounds turn out to be read-only, the setter rebuilds the markup with new bounds and re-appends its contents. Changing size after drawing extends or crops the page from the bottom-right without moving any strokes.
-- **No serialization on the hot path.** Holding a live `PaperMarkup` means the coordinator can update the binding at stroke end without encoding anything. Serialization happens only in `data()` and `encode(to:)`. This matters because `dataRepresentation()` is likely `async`, which would make synchronous `Data` storage impossible.
-- **`Codable` with an async source.** `encode(to:)` is synchronous. If `dataRepresentation()` is async, `Markup` keeps a serialized snapshot that the coordinator refreshes in the background after each stroke, and `encode(to:)` writes that snapshot. Apps that need guaranteed-fresh bytes call `try await markup.data()`. Phase 0 settles which path is needed.
+- **No serialization on the hot path.** Holding a live `PaperMarkup` means the coordinator can update the binding at stroke end without encoding anything. Serialization happens only in `data()` and `encode(to:)`. This matters because `dataRepresentation()` is `async throws` (confirmed), which makes synchronous `Data` storage impossible.
+- **`Codable` with an async source.** `encode(to:)` is synchronous but `dataRepresentation()` is async, so `Markup` keeps a serialized snapshot that the coordinator refreshes in the background after each stroke, and `encode(to:)` writes that snapshot. Apps that need guaranteed-fresh bytes call `try await markup.data()`. Decoding is simple because `init(dataRepresentation:)` is synchronous.
 - **Projections are cached safely.** `strokes` and `elements` decode once per token and are stored in a private `final class` box guarded by a `Mutex`. Mutations replace the box (copy-on-write), so copies never share stale caches and the type stays `Sendable`.
-- **Cheap equality.** `==` returns true immediately when tokens match. Otherwise it compares `paperSize` and the serialized snapshots. `hash` uses `paperSize` only, which is coarse but always consistent with `==`.
-- **Inserts take a rect.** A value has no idea what is on screen, so `insert` requires a position in page coordinates. "Insert where the user is looking" goes through the insertion menu, which the editor positions itself.
+- **Cheap equality.** `==` returns true immediately when tokens match. Otherwise it falls back to Apple's own `Equatable` conformance on `PaperMarkup`. `hash` uses `paperSize` only, which is coarse but always consistent with `==`.
+- **Inserts take a rect.** A value has no idea what is on screen, so `insert` requires a position in page coordinates, matching Apple's `insertNewShape(configuration:frame:rotation:)` family. "Insert where the user is looking" goes through the editor, which uses `suggestedFrameForInserting(contentInFrame:)`.
+- **Removal is unconfirmed.** The documented `PaperMarkup` API can insert, append, and transform, but shows no remove method. Removal may work by mutating `subelements`. Until Phase 0 confirms it, `remove(_:)` is provisional.
 - **Name.** Apple owns `PaperMarkup`, so ours is `Markup`, disambiguated as `PaperUI.Markup` if ever needed.
 - **Strokes and elements are never stored separately.** Z-order lives in the markup, Apple's blob carries data we cannot reconstruct, and two editable copies eventually disagree.
-- **Off-screen rendering.** `Markup.image(scale:)` and an `ImageRenderer`-friendly `PaperThumbnail` view, built on the framework's draw-into-context API.
+- **Off-screen rendering.** `Markup.image(scale:)` is `async` because Apple's `draw(in:frame:options:)` is. `PaperThumbnail` renders asynchronously with a placeholder, like `AsyncImage`.
 
 ---
 
@@ -433,7 +436,7 @@ Key decisions:
 
 `PaperEditor` is a `UIViewControllerRepresentable` (`NSViewControllerRepresentable` on macOS) wrapping `PaperMarkupViewController`. Its private `Coordinator` is the "paperContext". It:
 
-- Acts as the view controller's delegate and the `PKToolPicker` observer, and owns the tool picker's lifetime. One picker per window, shared between editors.
+- Observes the view controller's properties with Swift Observation (the controller is `Observable`, and Apple's sample watches `markup` this way), uses the delegate only where Observation can't help, and acts as the `PKToolPicker` observer, and owns the tool picker's lifetime. One picker per window, shared between editors.
 - Converts between our value types and framework types (`PaperTool ↔ PKTool`, `PaperFeatures → FeatureSet`, `PaperStroke ← PKStroke`).
 - Prevents feedback loops. It records the last `token` it pushed and the last it received. `updateUIViewController` only writes markup into the view controller when the binding's token differs from both, which means the change came from outside (load, sync, programmatic insert).
 - Coalesces writes. Delegate change callbacks during an active stroke are batched so the binding updates once per stroke end, not per touch sample. If serialization is async, it refreshes the markup's snapshot in the background afterward.
@@ -493,10 +496,10 @@ Platforms: iOS 27, iPadOS 27, macOS 27, and visionOS 27 minimum. PaperKit itself
 
 | Phase | Deliverable | Done when |
 |---|---|---|
-| **0. Spike** | Bare `PaperEditor(markup:)` on iPad that answers the five checks in Section 9.2 | Markup round-trips through `@State` without loops; strokes found in `subelements` with UUIDs that survive save; selection can (or provably cannot) be set; `bounds` setter behavior known; `.fitWidth` + `.top` anchor works |
+| **0. Spike** | Bare `PaperEditor(markup:)` on iPad that answers the checks in Section 9.2 | Markup round-trips through `@State` without loops; strokes found in `subelements` with UUIDs that survive save; selection can (or provably cannot) be set; `bounds` setter behavior known; `.fitWidth` + `.top` anchor works |
 | **1. Model** | `PaperModel` types, `Markup` in `PaperCore`, `Codable`/`Hashable` tests, tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes; stroke IDs survive save and reload; `paperSize` get/set round-trips |
 | **2. Core API** | `.paperTool`, `.paperFeatures`, `.paperToolPicker(isPresented:)`, `.disabled`, `.paperContentMode`, `.paperZoomRange`, loop-safe coordinator | Tool picker and a SwiftUI button both change the tool with no flicker; all four content modes behave through rotation |
-| **3. Interaction** | Selection (binding or callback per Phase 0), `onPaperGeometryChange`, insertion menu, `Image` backgrounds, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
+| **3. Interaction** | Selection (binding or callback per Phase 0), async `PaperThumbnail`, `onPaperGeometryChange`, insertion menu, `Image` backgrounds, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
 | **4. Native UI** | `PaperToolbar` in pure SwiftUI, `PaperThumbnail` | Demo app ships without `PKToolPicker` |
 | **5. Platforms** | macOS (`MarkupToolbarViewController`), visionOS | Same demo runs on every supported platform |
 
@@ -528,7 +531,8 @@ Checked against Apple's PaperKit reference pages and the WWDC26 PencilKit sessio
 2. **Stroke ID stability across save.** Do UUIDs survive `dataRepresentation()` → `init(dataRepresentation:)`?
 3. **Selection setter.** Can we assign `selection` programmatically? If not, selection ships as a callback.
 4. **`bounds` setter.** Settable directly, or must the `paperSize` setter rebuild the markup?
-5. **Content modes on `setContentVisibleFrame`.** Confirm `.fitWidth` + `.top` anchor and resting-scale zoom can be built on it, and what `ScrollConfiguration` exposes.
+5. **Removal.** Can elements and strokes be removed by mutating `subelements`, since `PaperMarkup` documents no remove method?
+6. **Content modes on `setContentVisibleFrame`.** Confirm `.fitWidth` + `.top` anchor and resting-scale zoom can be built on it, and what `ScrollConfiguration` exposes.
 
 ### 9.3 Other risks
 
@@ -546,4 +550,4 @@ Build **Option E**. Bind the markup like `TextEditor`, configure with environmen
 
 The case is simple. Every piece of this API already has a SwiftUI precedent, so a developer who knows SwiftUI already knows how to use it. The markup stays in the developer's hands as a plain value, which makes persistence, previews, and testing trivial. Tools as value types are the quiet multiplier: they let a pure SwiftUI toolbar, saved favorites, and sync all share one `@State` without touching PencilKit. A public `PaperContext` would have been faster to write and slower to live with, and SwiftUI's steady shift from proxies to plain values shows which direction to bet on.
 
-Start with Phase 0. It is now a short list of yes/no questions about PaperKit, and every answer is already paired with a fallback in this plan. Nothing beyond Phase 0 should start until those answers are in.
+Start with Phase 0. Apple's documentation already settled async saving, scroll control, undo, conformances, platforms, and stroke identity. What remains is six yes/no checks that only a running app can answer (Section 9.2), and each already has a fallback in this plan. Nothing beyond Phase 0 should start until those answers are in.
