@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.2, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)) · **Date:** 2026-10-31
+**Status:** v1.3, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -184,9 +184,8 @@ Keep the list short and group by concern. Each is a plain `EnvironmentValues` en
 .paperInsertionMenu(isPresented: $show)
 
 public struct PaperSelection: Hashable, Sendable {
-    public var strokeIDs: Set<PaperStroke.ID>
-    public var elementIDs: Set<PaperElement.ID>
-    public var isEmpty: Bool { strokeIDs.isEmpty && elementIDs.isEmpty }
+    public var ids: Set<PaperElement.ID>     // mirrors PaperKit's Set<MarkupOrderedSet.ElementID>
+    public var isEmpty: Bool { ids.isEmpty }
     public mutating func clear()
 }
 ```
@@ -365,7 +364,7 @@ public struct PaperStroke: Identifiable, Codable, Hashable, Sendable {
     public let mask: PaperPath?
     public let randomSeed: UInt32
 
-    public struct ID: Hashable, Codable, Sendable { let rawValue: String }
+    public struct ID: Hashable, Codable, Sendable { let rawValue: UUID }   // PKStroke.id, iOS 27
 
     // Equality compares everything. Hashing uses id only.
     // Valid because equal values always share an id, and it keeps
@@ -386,7 +385,7 @@ public struct PaperStrokePoint: Codable, Hashable, Sendable {
 
 Fields are `let` because a `PaperStroke` is a read-only snapshot of what is in the markup. Edits go through `Markup` methods, so there is no field you can change that silently goes nowhere.
 
-`ID` wraps the framework's stroke identifier as a string so it survives encoding regardless of the underlying type. Stable IDs unlock `ForEach` over strokes, selection that survives edits, and app data keyed by stroke (`[PaperStroke.ID: Tag]`) without the package needing to know about it.
+`ID` wraps the iOS 27 `PKStroke` UUID in our own type, so app code never depends on PencilKit. Stable IDs unlock `ForEach` over strokes, selection that survives edits, and app data keyed by stroke (`[PaperStroke.ID: Tag]`) without the package needing to know about it.
 
 ### 5.5 Markup
 
@@ -486,7 +485,7 @@ Rules that keep this healthy:
 - **`PaperUI`** holds the SwiftUI views and modifiers and re-exports the other two, so app code needs one import.
 - Use Swift Testing (`@Test`) throughout. Property-style tests check that `decode(encode(x)) == x` and that `a == b` implies equal hashes.
 
-Platforms: iOS 26, iPadOS 26, and macOS 26 minimum (PaperKit's floor). visionOS is added only once PaperKit availability there is confirmed. Swift 6 language mode with strict concurrency.
+Platforms: iOS 27, iPadOS 27, macOS 27, and visionOS 27 minimum. PaperKit itself starts at 26, but stable stroke IDs arrive in 27, and the plan depends on them. Swift 6 language mode with strict concurrency.
 
 ---
 
@@ -494,29 +493,50 @@ Platforms: iOS 26, iPadOS 26, and macOS 26 minimum (PaperKit's floor). visionOS 
 
 | Phase | Deliverable | Done when |
 |---|---|---|
-| **0. Spike** | Bare `PaperEditor(markup:)` on iPad that answers the five open questions in Section 9 | Markup round-trips through `@State` without loops; `.fitWidth` + `.top` anchor works; selection can (or provably cannot) be set by ID; undo works after an external write; `dataRepresentation()` sync/async confirmed |
+| **0. Spike** | Bare `PaperEditor(markup:)` on iPad that answers the five checks in Section 9.2 | Markup round-trips through `@State` without loops; strokes found in `subelements` with UUIDs that survive save; selection can (or provably cannot) be set; `bounds` setter behavior known; `.fitWidth` + `.top` anchor works |
 | **1. Model** | `PaperModel` types, `Markup` in `PaperCore`, `Codable`/`Hashable` tests, tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes; stroke IDs survive save and reload; `paperSize` get/set round-trips |
 | **2. Core API** | `.paperTool`, `.paperFeatures`, `.paperToolPicker(isPresented:)`, `.disabled`, `.paperContentMode`, `.paperZoomRange`, loop-safe coordinator | Tool picker and a SwiftUI button both change the tool with no flicker; all four content modes behave through rotation |
 | **3. Interaction** | Selection (binding or callback per Phase 0), `onPaperGeometryChange`, insertion menu, `Image` backgrounds, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
 | **4. Native UI** | `PaperToolbar` in pure SwiftUI, `PaperThumbnail` | Demo app ships without `PKToolPicker` |
-| **5. Platforms** | macOS (`MarkupToolbarViewController`), visionOS if supported | Same demo runs on every supported platform |
+| **5. Platforms** | macOS (`MarkupToolbarViewController`), visionOS | Same demo runs on every supported platform |
 
 ---
 
 ## 9. Risks and open questions
 
-Ranked by how much of the plan each one can invalidate. Items 1 through 5 are Phase 0's job.
+### 9.1 What Apple's documentation already answers
 
-1. **Scroll control.** `.paperContentMode`, anchors, and resting-scale zoom assume we can control placement inside `PaperMarkupViewController`. Fallback: our own `UIScrollView` around it, then `.fit`-only.
-2. **Async serialization.** If `dataRepresentation()` is `async`, `Markup` keeps a background-refreshed snapshot for `encode(to:)` (Section 5.5). Already designed for, but it must be confirmed.
-3. **Stroke ID access and stability.** The plan assumes the new stroke IDs are readable and stable across `dataRepresentation()` round-trips.
-4. **Programmatic selection.** If setting selection by ID is not public, selection ships as a callback, not a binding.
-5. **Undo integration.** Confirm how PaperKit's undo stack surfaces through SwiftUI's `\.undoManager`, and document that binding writes bypass it.
-6. **Element model depth.** PaperKit may not expose shapes, text boxes, and images as inspectable values. If not, `PaperElement` starts as an opaque ID plus bounds.
-7. **Background content.** Hosting SwiftUI content under the markup and scaling it with zoom. `Image` first.
-8. **Mutable bounds.** If `PaperMarkup.bounds` is read-only, the `paperSize` setter rebuilds the markup. Test that it preserves z-order and IDs.
-9. **HDR color fidelity.** Confirm linear components above 1.0 survive conversion to and from `PKInk`.
-10. **Tool picker ownership.** `PKToolPicker` is per-window. Two editors in one window share one picker.
+Checked against Apple's PaperKit reference pages and the WWDC26 PencilKit session (203) on 2026-10-31.
+
+| Question | Answer from docs | Effect on the plan |
+|---|---|---|
+| Is `dataRepresentation()` async? | **Yes:** `func dataRepresentation() async throws -> Data`. `init(dataRepresentation:)` is sync and `throws` | Confirms 5.5: hold a live `PaperMarkup`, keep a background-refreshed snapshot for `encode(to:)`, expose `try await markup.data()` |
+| What does `PaperMarkup` conform to? | `Identifiable`, `Equatable`, `Sendable`. **Not** `Codable` or `Hashable` | Wrapper still needed for `Codable`/`Hashable`. Apple's `Equatable` can back our `==` once the token check misses |
+| Can we read the contents? | `subelements: MarkupOrderedSet`, keyed by `MarkupOrderedSet.ElementID`. No stroke or `PKDrawing` getter (`append(contentsOf: PKDrawing)` is write-only) | `elements` projection is feasible. `strokes` depends on whether ink appears inside `subelements` (Phase 0) |
+| Do strokes have stable IDs? | **Yes, iOS 27:** `PKStroke` and `PKStrokePath` are `Identifiable` with a stable `UUID` that survives transforms, edits, and undo. Apple says the new PencilKit APIs also work with PaperKit | `PaperStroke.ID` wraps a `UUID`. Raises the floor to iOS 27 for stroke identity |
+| Is selection settable? | Controller exposes `selection: Set<MarkupOrderedSet.ElementID>` and `selectedMarkup`. PKCanvasView selection became controllable in iOS 27. Setter on PaperKit's `selection` not stated | `PaperSelection` should be one `Set<ElementID>`, not separate stroke and element sets. Setter still a Phase 0 check |
+| Can we control scrolling? | **Largely yes:** `scrollConfiguration`, `contentVisibleFrame`, `setContentVisibleFrame(_:animated:)`, `zoomRange` | Content modes and anchors can be built on `setContentVisibleFrame`. Our own `UIScrollView` fallback is likely unnecessary |
+| Undo? | Controller exposes `undoManager: UndoManager?` | Bridge it to `\.undoManager`. Binding writes still bypass it |
+| Insert where the user is looking? | `suggestedFrameForInserting(contentInFrame:)` | Lets the editor pick a frame for menu inserts without the value knowing the screen |
+| Change paper size? | `bounds` is listed as `var bounds: CGRect`; settability not stated. `transformContent(_:)` exists | `paperSize` setter design holds; Phase 0 confirms whether it writes bounds directly |
+| Observation? | The controller is `Observable`, and Apple's sample watches `markup` with `Observations` | The coordinator can observe properties instead of relying only on delegate callbacks |
+| Platforms | iOS, iPadOS, macOS, visionOS 26.0+ | visionOS returns to the platform list |
+
+### 9.2 Remaining Phase 0 checks
+
+1. **Ink inside `subelements`.** Do strokes appear in `MarkupOrderedSet`, and do they carry the iOS 27 stroke UUIDs? This decides whether `Markup.strokes` is possible.
+2. **Stroke ID stability across save.** Do UUIDs survive `dataRepresentation()` → `init(dataRepresentation:)`?
+3. **Selection setter.** Can we assign `selection` programmatically? If not, selection ships as a callback.
+4. **`bounds` setter.** Settable directly, or must the `paperSize` setter rebuild the markup?
+5. **Content modes on `setContentVisibleFrame`.** Confirm `.fitWidth` + `.top` anchor and resting-scale zoom can be built on it, and what `ScrollConfiguration` exposes.
+
+### 9.3 Other risks
+
+- **Element model depth.** `MarkupOrderedSet` element types are not documented in detail. `PaperElement` may start as an ID plus frame.
+- **Background content.** Hosting SwiftUI content in `contentView` and scaling it with zoom. `Image` first.
+- **HDR color fidelity.** Confirm linear components above 1.0 survive conversion to and from `PKInk`.
+- **Tool picker ownership.** `PKToolPicker` is per-window. Two editors in one window share one picker.
+- **OS floor.** Stroke IDs need iOS 27. Either target iOS 27 from the start, or ship strokes without IDs on 26. Recommendation: target 27 and keep the design simple.
 
 ---
 
