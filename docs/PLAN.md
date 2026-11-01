@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.17, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.18, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -790,6 +790,7 @@ public struct Paper: Codable, Hashable, Sendable, Transferable {
 
     public mutating func flatten()                 // top merges into locked; top becomes empty
     public mutating func unlock()                  // locked merges under top; locked becomes empty
+    public mutating func archive() async throws    // one-way: all layers baked into a searchable PDF background
 
     public var size: PaperSize { get set }         // keeps both markups the same size
     public mutating func rotate(_ turn: PaperRotation)   // turns all three layers together
@@ -824,7 +825,22 @@ paper.unlock()     // "reopen": everything locked becomes editable again, under 
 | Rasterize to an image | Fixed size, fast drawing | Sharpness when zoomed, stroke IDs, handwriting recognition, unlock |
 | Render to PDF | Vector, often smaller for dense ink | Stroke IDs, PencilKit recognition, unlock |
 
-If archiving ever matters, a later `flattenToBackground()` could render `markup` and `locked` into the PDF background as an explicit one-way step. It is not in v1.
+**`archive()`: the explicit one-way compaction.**
+
+```swift
+var copy = paper
+try await copy.archive()     // async: rendering and recognition are async
+paper = copy
+```
+
+1. Recognize the text in `markup` and `locked` (handwriting and text boxes), with positions.
+2. Render all three layers into a single-page PDF with `pdfData()`. Ink stays vector, so it is sharp at any zoom, not an image.
+3. Write the recognized text into that PDF as an invisible text layer at the matching positions, the same technique scanners use to make scanned PDFs searchable.
+4. The result becomes `background` as `.pdfPage`, and `markup` and `locked` are emptied.
+
+After archiving, the page looks identical and **is still searchable**: the text now comes from the PDF's own text layer through PDFKit, reported as `.background`. Copying text out of it works in any PDF viewer too. What is given up is editing: stroke IDs, `unlock()`, and per-stroke recognition are gone. Archiving an image background produces a PDF background that contains the image.
+
+Use it for finished pages: signed forms, graded worksheets, anything that should not change. It ships in Phase 4 with recognition, since step 1 depends on it.
 
 Key decisions:
 
@@ -909,7 +925,7 @@ Platforms: iOS 27, iPadOS 27, macOS 27, and visionOS 27 minimum. PaperKit itself
 | **1. Model** | `PaperModel` types, `Markup` in `PaperCore`, `Codable`/`Hashable` tests, tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes; stroke IDs survive save and reload; `paperSize` get/set round-trips; four quarter turns return an equal markup with the same IDs; `Paper` round-trips through `Codable` with its background |
 | **2. Core API** | `.paperTool`, `.paperFeatures`, `.paperToolPicker(isPresented:)`, `.disabled`, `.paperContentMode`, `.paperZoomRange`, loop-safe coordinator | Tool picker and a SwiftUI button both change the tool with no flicker; all four content modes behave through rotation |
 | **3. Interaction** | Selection (binding or callback per Phase 0), `PaperView`, image and PDF export, `onPaperGeometryChange`, insertion menu, `Image` and `PDFPageView` backgrounds, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
-| **4. Native UI, text, and audit additions** | `PaperToolbar` in pure SwiftUI; `recognizedText()` and `search(_:)` across ink, PDF text, and Vision OCR; `.paperScrollPosition`, tool picker items, `.paperInput`, insert methods, Section 4.9 smaller additions | Demo app ships without `PKToolPicker` |
+| **4. Native UI, text, and audit additions** | `PaperToolbar` in pure SwiftUI; `recognizedText()` and `search(_:)` across ink, PDF text, and Vision OCR; `archive()`; `.paperScrollPosition`, tool picker items, `.paperInput`, insert methods, Section 4.9 smaller additions | Demo app ships without `PKToolPicker` |
 | **5. Platforms** | macOS (`MarkupToolbarViewController`), visionOS | Same demo runs on every supported platform |
 
 ---
