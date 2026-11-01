@@ -188,6 +188,10 @@ Design notes:
 - **The PDF initializer takes a `PDFPage`, not a `PDFDocument`.** A markup is one page, so the type says which page. Multi-page documents are the app's job (one `Markup` per page).
 - **Labels stay `on:` for every form.** The argument type picks the overload, so the call reads "editor for this markup, on this page," and the trailing-closure form drops the label as SwiftUI builders do.
 - **The background is laid out in the page's frame.** Whatever view is passed is sized to `markup.paperSize`, so an image stretches to the page like a `.resizable()` image in a fixed frame, and a PDF page fills it exactly.
+- **Every form ends in `contentView`.** Internally the background becomes one `UIView` assigned to `PaperMarkupViewController.contentView`, framed to the page rect:
+  - *View builder and `Image`:* the SwiftUI view is placed in a `UIHostingController`, and its view becomes `contentView`. (A SwiftUI `Image` can't be turned back into a `UIImage`, so it is hosted like any other view. Hosting a single image is cheap.)
+  - *`PDFPage`:* skips SwiftUI entirely. The bridge assigns a native `CATiledLayer`-backed view that draws the page with PDFKit, because tiled drawing is what keeps vector content sharp as the user zooms. `PDFPageView` is just the SwiftUI face of that same view for use elsewhere.
+  - *Zoom sharpness:* hosted and image backgrounds are limited by their resolution, as in Apple's `UIImageView` sample. Only the PDF path re-renders at every zoom level.
 - **Initializers never resize the markup.** Writing to a binding from `init` is not allowed in SwiftUI. Matching sizes is done when the markup is created: `Markup(paperSize: PaperSize(page))` reads the PDF page's media box in points.
 
 Rules:
