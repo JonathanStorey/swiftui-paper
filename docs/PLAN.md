@@ -395,6 +395,7 @@ extension Paper {
         case star
         case chatBubble
         case arrow
+        case line                                                // reported for lines; create with insertLine(from:to:)
     }
 
     public struct ShapeStyle: Codable, Hashable, Sendable {
