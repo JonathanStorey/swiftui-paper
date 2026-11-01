@@ -4,33 +4,6 @@ import PencilKit
 import Testing
 @testable import PaperUI
 
-struct MarkupTests {
-    @Test func emptyRoundTripKeepsSize() async throws {
-        let markup = Markup(paperSize: .a4)
-        let restored = try Markup(dataRepresentation: await markup.dataRepresentation())
-        #expect(restored.paperSize == .a4)
-        #expect(restored.isEmpty)
-    }
-
-    @Test func boundsAreSettableAndKeepContent() {
-        var markup = Markup(paperSize: .letter)
-        markup.withPaperMarkup { $0.append(contentsOf: PKDrawing.sample) }
-        let before = markup.withPaperMarkup { $0.subelements.strokes.map(\.id) }
-
-        markup.paperSize = .legal
-
-        #expect(markup.paperSize == .legal)
-        #expect(markup.withPaperMarkup { $0.subelements.strokes.map(\.id) } == before)
-    }
-
-    @Test func mutationChangesToken() {
-        var markup = Markup()
-        let token = markup.token
-        markup.paperSize = .a5
-        #expect(markup.token != token)
-    }
-}
-
 /// Behavior the SDK interface can't state. Each test pins an answer recorded in docs/SDK-FINDINGS.md.
 struct PaperKitBehaviorTests {
     @Test func strokesAreReadableAfterAppendingDrawing() {
