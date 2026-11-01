@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.13, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.14, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -156,7 +156,7 @@ Why this shape wins:
 - **Each two-way piece is optional.** If you don't care about selection, don't bind it. `TextField` works the same way with `.focused`.
 - **Tools are values.** A custom SwiftUI palette and the system `PKToolPicker` can drive the same `@State var tool` at once, which makes a native SwiftUI toolbar a later add-on instead of a rewrite.
 - **No redundant modifiers.** Editing on/off reads `\.isEnabled`, so `.disabled(true)` on the editor, or on any container above it, just works.
-- **Commands are value mutations.** `paper.markup.insert(.rectangle, in: rect)` mirrors appending to a string.
+- **Commands are value mutations.** `paper.markup.insertShape(.rectangle, style: .outline, in: rect)` mirrors appending to a string.
 
 **Two layers: `Paper` and `Markup`.** The test for what belongs together is "what does it take to draw this page correctly?" Size, background, and ink pass. Titles, page lists, and files do not. So the package has two value layers, and no document format:
 
@@ -229,7 +229,7 @@ Keep the list short and group by concern. Each is a plain `EnvironmentValues` en
 | `.disabled(_ :)` (SwiftUI's own) | editable flag, read from `\.isEnabled` |
 | `.paperFeatures(_ :PaperFeatures)` | `FeatureSet` (`.latest`, `.version(_)`, insert/remove features, HDR headroom) |
 | `.paperRulerActive(_ :)` | ruler |
-| `.paperTouchPolicy(_ :)` | Pencil-only vs finger drawing |
+| `.paperInput(direct:pointer:)` | finger and trackpad/mouse behavior (Section 4.9) |
 | `.paperContentMode(_ :anchor:)` | how the page sits in the view at rest: `PaperContentMode` plus a `UnitPoint` anchor (default `.center`) |
 | `.paperZoomRange(_ :)` | min/max zoom, relative to the content mode's resting scale |
 
@@ -334,7 +334,7 @@ public struct PaperGeometry: Equatable, Sendable {
 
 The transform closure means the action fires only when the value you care about changes, not on every pinch frame.
 
-Programmatic zoom (zoom to a rect, zoom to the selection) is **out of v1**. If a real use case appears, the Swifty answer is a binding, `.paperZoom($scale)`.
+Programmatic scrolling and zooming (reveal a search match, zoom to the selection) use `.paperScrollPosition` (Section 4.9). Search results made this a real need.
 
 **Built on documented API.** `PaperMarkupViewController` exposes `zoomRange`, `contentVisibleFrame`, `setContentVisibleFrame(_:animated:)`, and a `scrollConfiguration`. Content modes and anchors become arithmetic: compute the page rect that should be visible at rest and call `setContentVisibleFrame`. `PaperGeometry.visibleRect` reads `contentVisibleFrame`. Phase 0 confirms the behavior through rotation; hosting our own `UIScrollView` stays as an unlikely fallback.
 
@@ -442,6 +442,149 @@ Why an `OptionSet` rather than a single-choice enum: `.all` and `.markup` are re
 - **Higher-level AI is the app's call.** Summaries, questions, or extraction can pass `recognizedText()` to Apple's Foundation Models framework. The package supplies the text and its locations, not the model.
 
 Phase 3 ships markup recognition. Background text (PDFKit first, Vision OCR second) lands in Phase 4.
+
+### 4.9 Additions from the PaperKit coverage audit
+
+These close the gaps found in Review 2. Importing `PKDrawing` and feature-set compatibility checks were deliberately dropped.
+
+#### Scrolling and zooming from code
+
+Search results and "zoom to selection" need a way to move the view. This follows SwiftUI's `ScrollPosition`: a small value the app holds in `@State`, changes by calling methods, and binds to the editor. `.onPaperGeometryChange` stays for observing; this is for commanding.
+
+```swift
+public struct PaperScrollPosition: Hashable, Sendable {
+    public init()
+    public var visibleRect: CGRect? { get }            // last reported, page coordinates
+    public mutating func scrollTo(rect: CGRect, anchor: UnitPoint? = nil, zoom: Bool = true)
+    public mutating func scrollTo(match: PaperTextMatch)
+    public mutating func scrollTo(selection: PaperSelection)
+    public mutating func zoomToFit()                    // back to the content mode's resting state
+}
+
+extension View {
+    public func paperScrollPosition(_ position: Binding<PaperScrollPosition>) -> some View
+}
+```
+
+```swift
+@State private var position = PaperScrollPosition()
+
+PaperEditor(paper: $paper)
+    .paperScrollPosition($position)
+
+Button("Find") { if let hit = matches.first { position.scrollTo(match: hit) } }
+```
+
+The editor implements each request with `setContentVisibleFrame(_:animated:)`, animating unless Reduce Motion is on.
+
+#### Inserting elements from code
+
+"Inserting" means adding new shapes, lines, text boxes, or images to the page from code rather than by drawing, such as a Stamp button that places an "Approved" text box, or pasting a signature image. PaperKit already supports this with four methods on `PaperMarkup` (`insertNewShape`, `insertNewLine`, `insertNewTextbox`, `insertNewImage`). We mirror them one to one on `Markup`, with our own value types in place of Apple's:
+
+```swift
+extension Markup {
+    public mutating func insertShape(_ shape: PaperShape, style: PaperShapeStyle, in frame: CGRect, rotation: Angle = .zero)
+    public mutating func insertLine(from start: CGPoint, to end: CGPoint, style: PaperShapeStyle, startArrow: Bool = false, endArrow: Bool = false)
+    public mutating func insertText(_ text: AttributedString, in frame: CGRect, rotation: Angle = .zero)
+    public mutating func insertImage(_ image: CGImage, in frame: CGRect, rotation: Angle = .zero)
+}
+
+public enum PaperShape: Hashable, Codable, Sendable {
+    case rectangle, roundedRectangle, ellipse, triangle, star, speechBubble   // mirrors ShapeConfiguration (verify cases)
+}
+
+public struct PaperShapeStyle: Hashable, Codable, Sendable {
+    public var stroke: PaperColor?
+    public var fill: PaperColor?
+    public var lineWidth: CGFloat
+    public static let outline: PaperShapeStyle       // black stroke, no fill
+    public static func filled(_ color: PaperColor) -> PaperShapeStyle
+}
+```
+
+```swift
+// A Stamp button that drops a text box in the middle of what the user sees
+if let visible = position.visibleRect {
+    let frame = CGRect(x: visible.midX - 100, y: visible.midY - 25, width: 200, height: 50)
+    paper.markup.insertText(AttributedString("APPROVED"), in: frame)
+}
+```
+
+Four named methods replace the earlier single `insert(_:in:)` with an undefined template. A line has endpoints, not a frame, so one shared signature never fit. All coordinates are page coordinates, and `Angle` comes from SwiftUI's own type.
+
+#### Tool picker configuration
+
+```swift
+extension View {
+    public func paperToolPicker(isPresented: Binding<Bool>, items: [PaperToolPickerItem] = PaperToolPickerItem.standard) -> some View
+    public func paperToolPickerAccessory(_ title: LocalizedStringKey, systemImage: String, action: @escaping () -> Void) -> some View
+}
+
+public enum PaperToolPickerItem: Hashable, Sendable {
+    case ink(InkKind)
+    case eraser(EraserMode)
+    case lasso
+    case ruler
+    case custom(id: String, name: String, systemImage: String)
+    public static let standard: [PaperToolPickerItem]
+}
+
+// PaperTool gains one case so the tool binding can report a custom tool
+public enum PaperTool { /* existing cases */ case custom(id: String) }
+```
+
+When the user picks a custom item, the `tool` binding becomes `.custom(id:)`, and the app decides what that tool does (place a stamp, open a sheet). On macOS the same modifier shows `MarkupToolbarViewController` instead of `PKToolPicker`, the way `.toolbar` adapts per platform, so there is no separate macOS API.
+
+#### Input: finger, trackpad, and mouse
+
+Replaces `.paperTouchPolicy`, which only covered fingers. `PaperMarkupViewController` exposes `directTouchMode`, `directTouchAutomaticallyDraws`, and `indirectPointerTouchMode`:
+
+```swift
+extension View {
+    public func paperInput(direct: PaperTouchMode = .automatic, pointer: PaperTouchMode = .automatic) -> some View
+}
+
+public enum PaperTouchMode: Hashable, Sendable {
+    case automatic   // follow the system "Only Draw with Apple Pencil" setting (directTouchAutomaticallyDraws)
+    case draw        // finger or pointer draws
+    case navigate    // finger or pointer scrolls and selects; only Pencil draws
+}
+```
+
+`direct` is a finger on the screen. `pointer` is a trackpad or mouse on iPad and Mac. Case names map to PaperKit's `TouchMode` (verify its cases in Phase 0).
+
+#### Selection content
+
+The selection binding holds IDs. To copy or share what is selected, the editor also reports the selection as its own markup, from `selectedMarkup: PaperMarkup`:
+
+```swift
+extension View {
+    public func onPaperSelectionChange(perform action: @escaping (_ selection: PaperSelection, _ selectedContent: Markup) -> Void) -> some View
+}
+```
+
+```swift
+.onPaperSelectionChange { selection, selectedContent in
+    shareable = selection.isEmpty ? nil : selectedContent   // ShareLink(item: Paper(markup: shareable))
+}
+```
+
+If Phase 0 shows selection is report-only, this callback is also how selection reaches the app, replacing the binding.
+
+#### Smaller additions
+
+| Addition | Type | Built on |
+|---|---|---|
+| `Markup.contentBounds` | `var contentBounds: CGRect { get }` | `contentsRenderFrame`. For crop-to-content thumbnails and zoom-to-content |
+| `Markup.indexableContent` | `var indexableContent: String? { get }` | Apple's cached text. Sync, so apps can feed Core Spotlight without running recognition |
+| `Markup.erase(along:width:)` | `mutating func erase(along path: CGPath, width: CGFloat)` | iOS 27 programmatic erase with a `PKStrokePath` |
+| `PaperStroke.path` | `var path: CGPath { get }` (plus `Path(_ stroke: PaperStroke)` in PaperUI) | iOS 27 `PKStrokePath` to Bézier conversion. Lets apps draw or hit-test strokes in SwiftUI |
+| `Paper.resize(to:scalingContent:)` | `mutating func resize(to size: PaperSize, scalingContent: Bool)` | `transformContent(_:)` plus the size setter. `false` extends or crops, `true` scales the ink with the page |
+| `.paperAdornments(_:)` | `func paperAdornments(_ adornments: [PaperAdornment]) -> some View` | `adornments` and `adornmentFrame(for:)`. Shape of `PaperAdornment` waits on Phase 0, since Apple's docs say little |
+| VoiceOver label | no API | The editor and `PaperView` default their `accessibilityLabel` to `indexableContent`. Apps override with `.accessibilityLabel` |
+| Preview samples | `static var sample: Paper { get }`, `static var samplePDF: Paper { get }` | In `PaperTesting`, so `#Preview` works without a device |
+
+`path`, `erase(along:width:)`, and `contentBounds` live in `PaperCore` because they need PencilKit or PaperKit. `PaperModel` stays portable.
 
 ---
 
@@ -577,7 +720,14 @@ public struct Markup: Codable, Hashable, Sendable, Transferable {
     public var isEmpty: Bool { get }               // no strokes or elements
     public var strokes: [PaperStroke] { get }      // decoded on first read, cached
     public var elements: [PaperElement] { get }    // decoded on first read, cached
-    public mutating func insert(_ element: PaperElement.Template, in rect: CGRect)
+    // Inserting new elements from code (Section 4.9)
+    public mutating func insertShape(_ shape: PaperShape, style: PaperShapeStyle, in frame: CGRect, rotation: Angle = .zero)
+    public mutating func insertLine(from start: CGPoint, to end: CGPoint, style: PaperShapeStyle, startArrow: Bool = false, endArrow: Bool = false)
+    public mutating func insertText(_ text: AttributedString, in frame: CGRect, rotation: Angle = .zero)
+    public mutating func insertImage(_ image: CGImage, in frame: CGRect, rotation: Angle = .zero)
+    public mutating func erase(along path: CGPath, width: CGFloat)
+    public var contentBounds: CGRect { get }       // PaperMarkup.contentsRenderFrame
+    public var indexableContent: String? { get }   // PaperMarkup.indexableContent
     public mutating func append(_ other: Markup)
     public mutating func rotate(_ turn: PaperRotation)   // right-angle increments, see below
     public mutating func remove(_ ids: some Collection<PaperElement.ID>)   // pending Phase 0
@@ -610,7 +760,7 @@ Key decisions:
   Implementation uses two documented pieces: `transformContent(_:)` with a 90° rotation plus a translation back into positive coordinates, then the `paperSize` setter to swap the dimensions. Right angles keep it lossless: points land on exact coordinates, the page stays a rectangle, and four quarter turns return the original. Stroke UUIDs survive transforms per Apple, so selection and app data keyed by ID stay valid. In the editor, rotation is a binding write like any other markup change, so the coordinator re-applies the content mode and anchor, and the app registers undo for it. Free-angle rotation is deliberately excluded: it would leave the page a non-rectangle or force a bounding box that grows on every turn.
 
   A display-only rotation (turning the view while the page stays put, for comfortable drawing) would be a separate view modifier. It is not in v1.
-- **Inserts take a rect.** A value has no idea what is on screen, so `insert` requires a position in page coordinates, matching Apple's `insertNewShape(configuration:frame:rotation:)` family. "Insert where the user is looking" goes through the editor, which uses `suggestedFrameForInserting(contentInFrame:)`.
+- **Inserts take a frame.** A value has no idea what is on screen, so each insert takes a position in page coordinates, matching Apple's `insertNewShape(configuration:frame:rotation:)` family. To insert where the user is looking, read `PaperScrollPosition.visibleRect` (Section 4.9).
 - **Removal is unconfirmed.** The documented `PaperMarkup` API can insert, append, and transform, but shows no remove method. Removal may work by mutating `subelements`. Until Phase 0 confirms it, `remove(_:)` is provisional.
 - **Name.** Apple owns `PaperMarkup`, so ours is `Markup`, disambiguated as `PaperUI.Markup` if ever needed.
 - **Strokes and elements are never stored separately.** Z-order lives in the markup, Apple's blob carries data we cannot reconstruct, and two editable copies eventually disagree.
@@ -722,7 +872,7 @@ Platforms: iOS 27, iPadOS 27, macOS 27, and visionOS 27 minimum. PaperKit itself
 | **1. Model** | `PaperModel` types, `Markup` in `PaperCore`, `Codable`/`Hashable` tests, tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes; stroke IDs survive save and reload; `paperSize` get/set round-trips; four quarter turns return an equal markup with the same IDs; `Paper` round-trips through `Codable` with its background |
 | **2. Core API** | `.paperTool`, `.paperFeatures`, `.paperToolPicker(isPresented:)`, `.disabled`, `.paperContentMode`, `.paperZoomRange`, loop-safe coordinator | Tool picker and a SwiftUI button both change the tool with no flicker; all four content modes behave through rotation |
 | **3. Interaction** | Selection (binding or callback per Phase 0), `PaperView`, image and PDF export, `onPaperGeometryChange`, insertion menu, `Image` and `PDFPageView` backgrounds, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
-| **4. Native UI and text** | `PaperToolbar` in pure SwiftUI; `recognizedText()` and `search(_:)` across ink, PDF text, and Vision OCR | Demo app ships without `PKToolPicker` |
+| **4. Native UI, text, and audit additions** | `PaperToolbar` in pure SwiftUI; `recognizedText()` and `search(_:)` across ink, PDF text, and Vision OCR; `.paperScrollPosition`, tool picker items, `.paperInput`, insert methods, Section 4.9 smaller additions | Demo app ships without `PKToolPicker` |
 | **5. Platforms** | macOS (`MarkupToolbarViewController`), visionOS | Same demo runs on every supported platform |
 
 ---

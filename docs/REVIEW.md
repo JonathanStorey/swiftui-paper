@@ -139,3 +139,5 @@ public enum PaperElementTemplate: Hashable, Sendable {
 ## Deliberately left out
 - **Substroke ranges and `renderGroupID`:** niche iOS 27 APIs. Expose them if an app asks.
 - **A custom recognizer configuration API:** `preferredLanguages` can wait until someone needs a non-default language.
+
+> **Update (2026-11-01):** Folded into PLAN.md v1.14, Section 4.9. Dropped at Jonathan's direction: PKDrawing import (Tier 1 #3) and feature-set compatibility checks (`requiredFeatures`, `removeUnsupported(by:)`).
