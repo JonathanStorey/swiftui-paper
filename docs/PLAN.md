@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.9, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.10, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -194,14 +194,14 @@ Design notes:
   - *Zoom sharpness:* hosted and image backgrounds are limited by their resolution, as in Apple's `UIImageView` sample. Only the PDF path re-renders at every zoom level.
 - **Initializers take only what the editor *is*: the markup and the paper it sits on.** Everything about *how* it behaves (tool, selection, features, content mode, zoom) stays a modifier, as with `TextEditor(text:)` plus `.font`, `.disabled`, and `.focused`. That includes the feature set even though `PaperMarkupViewController`'s initializer requires one: its `supportedFeatureSet` is a settable property, so `.paperFeatures` defaults to `.latest` and updates it.
 - **Placeholders use the markup, not an init parameter.** `Markup.isEmpty` lets apps write `.overlay { if markup.isEmpty { Text("Draw here") } }` with no extra API.
-- **Display-only is a different view.** Like `Text` beside `TextEditor`, a read-only `PaperView(markup)` takes a plain value instead of a binding. In v1, `PaperThumbnail` fills that role.
+- **Display-only is a different view.** Like `Text` beside `TextEditor`, a read-only `PaperView(markup)` takes a plain value instead of a binding. It is also how thumbnails are made (Section 4.7).
 - **Initializers never resize the markup.** Writing to a binding from `init` is not allowed in SwiftUI. Matching sizes is done when the markup is created: `Markup(paperSize: PaperSize(page))` reads the PDF page's media box in points.
 
 Rules:
 - **A background is a view, not content.** It is not stored in `Markup`. The app persists which template or PDF page it used, the same way a PDF viewer keeps the PDF separate from annotations. Use `insertNewImage` only when the image should be a movable, selectable element.
 - **PDF fits our units exactly.** PDF pages are measured in points, so `Markup(paperSize: PaperSize(page))` makes the page and the markup line up one to one with no scaling math.
 - **`PDFPageView`** (public, usable on its own) is a small SwiftUI wrapper around a tiled `UIView` that draws a `PDFPage` with PDFKit, so it stays crisp when zoomed instead of blurring like a pre-rendered image.
-- **Export flattens both.** `markup.image(scale:background:)` draws the background, then the markup, matching Apple's thumbnail sample, which fills the context before calling `draw`.
+- **Export flattens both.** `markup.image(size:background:)` and `markup.pdfData(background:)` draw the background, then the markup, matching Apple's thumbnail sample, which fills the context before calling `draw`.
 - **Plain paper color** stays on the markup (`PaperMarkup.backgroundColor`), because it is content.
 
 Open questions for Phase 0: does `contentView` scale and scroll with the markup automatically, and does a `UIHostingController` view work there? Phase 3 ships `Image` and `PDFPageView` first, then arbitrary SwiftUI content.
@@ -231,7 +231,7 @@ Keep the list short and group by concern. Each is a plain `EnvironmentValues` en
 | `\.undoManager` | Undo (Section 4.5) |
 | `\.layoutDirection` | `.leading`/`.trailing` anchors flip in right-to-left languages, as they do everywhere else in SwiftUI |
 | `\.accessibilityReduceMotion` | Programmatic visible-frame changes (re-anchoring on rotation) skip animation |
-| `\.displayScale` | `PaperThumbnail` renders at the screen's scale |
+| `\.displayScale` | `PaperView` renders at the screen's scale |
 
 Deliberately not borrowed: `\.editMode` (overlaps `.disabled` with list-specific meaning), `.tint` (PaperKit does not expose a selection accent color), and `.backgroundStyle` (the paper color is stored in `PaperMarkup.backgroundColor`, so it is content, not environment).
 
@@ -336,6 +336,41 @@ Use the SwiftUI `onChange`/callback idiom rather than a delegate:
 .onPaperDrawingBegan { ... }
 .onChange(of: markup) { save() }   // works because Markup is Equatable
 ```
+
+### 4.7 Rendering: thumbnails, previews, and export
+
+Apple provides one rendering primitive: `PaperMarkup.draw(in: CGContext, frame:, options:) async`. Apple's own thumbnail sample creates a bitmap context, fills it white, and awaits `draw`. Everything here is built on that one call. The choice of `CGContext` decides the output format.
+
+**Data API on `Markup`:**
+
+```swift
+let cgImage = try await markup.image(size: CGSize(width: 300, height: 400))
+let pdf     = try await markup.pdfData(background: .pdfPage(page))
+```
+
+| Output | How it's made | Use it for |
+|---|---|---|
+| `CGImage` | Bitmap context | Thumbnails, lists, widgets. Convert with `Image(decorative:scale:)`, `UIImage(cgImage:)`, or encode PNG/JPEG/HEIC with ImageIO |
+| PDF `Data` | PDF context sized to `paperSize` | Print and share at true paper size. Because both PDF and `Markup` use points, the page maps one to one, and ink should stay vector if PaperKit draws vector into a PDF context (Phase 0 check) |
+
+`CGImage` is the core format, not `UIImage`, so the API works the same on iOS and macOS and stays `Sendable`. `background` takes a `PaperBackgroundSource` (`.image(CGImage)`, `.pdfPage(PDFPage)`, `.color(CGColor)`) because export has no SwiftUI view hierarchy to host a view builder.
+
+**`Transferable`.** `Markup` exports as PNG and PDF representations alongside its own data type, so `ShareLink(item: markup, preview: ...)` and drag-and-drop work with no extra code.
+
+**One read-only view: `PaperView`.** Rather than separate `PaperView` and `PaperThumbnail` types, there is one. A thumbnail is just a small `PaperView`.
+
+```swift
+PaperView(markup)                      // plain paper
+PaperView(markup, on: pdfPage)         // same "on:" forms as PaperEditor
+    .frame(width: 120)                 // size it like any view; it keeps the page's aspect ratio
+```
+
+- **Renders a bitmap at its laid-out size** times `\.displayScale`, so a 120 pt thumbnail costs a 120 pt render, and a full-screen preview renders at full size.
+- **Async like `AsyncImage`.** Shows a placeholder (the paper color) until the render finishes. Rendering runs in `.task(id:)` keyed on the markup's token and size, so it re-renders only when the content or size actually changes.
+- **Cached by token.** Scrolling a grid of thumbnails back and forth doesn't re-render unchanged pages.
+- **Sizes like `Image`.** Its ideal size is the paper size and it respects `.aspectRatio`, so `.frame(width:)` alone gives a correctly shaped thumbnail.
+- **Not zoomable.** A read-only page that zooms is `PaperEditor` with `.disabled(true)`.
+- **Not `ImageRenderer`-compatible.** `ImageRenderer` renders synchronously and would capture the placeholder. Use `markup.image(size:)` instead.
 
 ---
 
@@ -477,7 +512,8 @@ public struct Markup: Codable, Hashable, Sendable, Transferable {
     public mutating func remove(_ ids: some Collection<PaperElement.ID>)   // pending Phase 0
 
     public func data() async throws -> Data        // wraps async dataRepresentation()
-    public func image(scale: CGFloat) async -> CGImage   // wraps async draw(in:frame:options:)
+    public func image(size: CGSize, background: PaperBackgroundSource? = nil) async throws -> CGImage
+    public func pdfData(background: PaperBackgroundSource? = nil) async throws -> Data
 }
 ```
 
@@ -505,7 +541,7 @@ Key decisions:
 - **Removal is unconfirmed.** The documented `PaperMarkup` API can insert, append, and transform, but shows no remove method. Removal may work by mutating `subelements`. Until Phase 0 confirms it, `remove(_:)` is provisional.
 - **Name.** Apple owns `PaperMarkup`, so ours is `Markup`, disambiguated as `PaperUI.Markup` if ever needed.
 - **Strokes and elements are never stored separately.** Z-order lives in the markup, Apple's blob carries data we cannot reconstruct, and two editable copies eventually disagree.
-- **Off-screen rendering.** `Markup.image(scale:)` is `async` because Apple's `draw(in:frame:options:)` is. `PaperThumbnail` renders asynchronously with a placeholder, like `AsyncImage`.
+- **Off-screen rendering.** `image(size:background:)` and `pdfData(background:)` are `async` because Apple's `draw(in:frame:options:)` is. See Section 4.7.
 
 ---
 
@@ -548,7 +584,7 @@ swiftui-paper/
 │  │  ├─ Modifiers/Config.swift, Bindings.swift, Events.swift
 │  │  ├─ Environment/PaperEnvironmentKeys.swift
 │  │  ├─ Color/PaperColor+SwiftUI.swift
-│  │  └─ Views/PaperThumbnail.swift, PaperToolbar.swift (Phase 4)
+│  │  └─ Views/PaperView.swift, PDFPageView.swift, PaperToolbar.swift (Phase 4)
 │  └─ PaperTesting/        # fixtures, sample markups, snapshot helpers
 ├─ Tests/
 │  ├─ PaperModelTests/     # Codable round-trips, Hashable laws, forward-compat decoding
@@ -576,8 +612,8 @@ Platforms: iOS 27, iPadOS 27, macOS 27, and visionOS 27 minimum. PaperKit itself
 | **0. Spike** | Bare `PaperEditor(markup:)` on iPad that answers the checks in Section 9.2 | Markup round-trips through `@State` without loops; strokes found in `subelements` with UUIDs that survive save; selection can (or provably cannot) be set; `bounds` setter behavior known; `.fitWidth` + `.top` anchor works |
 | **1. Model** | `PaperModel` types, `Markup` in `PaperCore`, `Codable`/`Hashable` tests, tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes; stroke IDs survive save and reload; `paperSize` get/set round-trips; four quarter turns return an equal markup with the same IDs |
 | **2. Core API** | `.paperTool`, `.paperFeatures`, `.paperToolPicker(isPresented:)`, `.disabled`, `.paperContentMode`, `.paperZoomRange`, loop-safe coordinator | Tool picker and a SwiftUI button both change the tool with no flicker; all four content modes behave through rotation |
-| **3. Interaction** | Selection (binding or callback per Phase 0), async `PaperThumbnail`, `onPaperGeometryChange`, insertion menu, `Image` and `PDFPageView` backgrounds, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
-| **4. Native UI** | `PaperToolbar` in pure SwiftUI, `PaperThumbnail` | Demo app ships without `PKToolPicker` |
+| **3. Interaction** | Selection (binding or callback per Phase 0), `PaperView`, image and PDF export, `onPaperGeometryChange`, insertion menu, `Image` and `PDFPageView` backgrounds, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
+| **4. Native UI** | `PaperToolbar` in pure SwiftUI | Demo app ships without `PKToolPicker` |
 | **5. Platforms** | macOS (`MarkupToolbarViewController`), visionOS | Same demo runs on every supported platform |
 
 ---
