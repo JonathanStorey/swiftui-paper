@@ -518,3 +518,31 @@ extension PKToolPickerCustomItem {
 ```
 
 `PKToolPickerItem.tool: (any PKTool)?` (iOS 26) helps map the selected item back to `PaperTool`. `PKToolPicker.colorMaximumLinearExposure` must match `FeatureSet.colorMaximumLinearExposure`.
+
+---
+
+## E. Phase 1 UI checks
+
+Run in `Demo/PaperDemo` on an iPad Pro 11-inch (M5) iOS 27.0 simulator, with `PAPERUI_DEBUG=1` logging from the coordinator. Locked content comes from `Paper.lockAll()`, which sets `allowedInteractions = .readOnly` on every element. Each check has a control run on the same strokes unlocked.
+
+| PLAN.md | Check | Result |
+|---|---|---|
+| §5.2 | Vector eraser on locked strokes | **Respected.** A swipe through two locked strokes leaves both. The same swipe on unlocked strokes removes both. No markup-change callback fires for the locked run. No fallback needed |
+| §5.2 | Lasso on locked strokes | **Respected.** A lasso around two locked strokes selects nothing (no selection callback) and a drag inside it moves nothing. Unlocked control: the lasso selects both and the drag moves them |
+| §3.4 | `\.undoManager` | The controller's `undoManager` is the same object as the SwiftUI environment's. Undo from a toolbar button restores erased strokes and writes the binding |
+| §5.1 | `zoomRange` / `zoomScale` units | Absolute view points per page point. After a `.fit` placement `scrollConfiguration.zoomScale` equals the computed resting scale (1.3627 portrait, 0.9059 landscape on letter). The coordinator multiplies `paperZoomRange` by the resting scale |
+| §5.1 | `setContentVisibleFrame` | Places the rect, but letterboxing in `.fit` is centered by the controller, so the anchor does not move the letterbox space (asked y = 0, got y = −5.1). It must run after the canvas has laid out at the new size, or the controller zooms against the old size (rotation gave 0.62 instead of 0.91 until the coordinator forced `layoutIfNeeded()`) |
+| Phase 1 | Rotation | Strokes stay in page coordinates through portrait → landscape → portrait |
+| Phase 1 | Save, relaunch, restore | `dataRepresentation()` → file → `Paper(dataRepresentation:)` restores moved and newly drawn strokes |
+
+Other behavior found on the way:
+
+1. **The tool picker does not update `drawingTool`.** Picking a tool in `PKToolPicker` changes what the canvas draws with, but `PaperMarkupViewController.drawingTool` keeps the old value and Observation does not fire. The coordinator reads `PKToolPicker.selectedToolItem.tool` in `toolPickerSelectedToolItemDidChange(_:)` instead. On macOS it forwards the toolbar delegate and reads `selectedDrawingTool`.
+2. **Selecting a picker item echoes the item's own tool.** Setting `selectedToolItemIdentifier` calls the observer with the item's width and color (pen width 2.68, not the app's 3). The coordinator ignores that echo. Setting `drawingTool` afterward wins: the app's red marker draws red while the picker swatch still shows the item's yellow.
+3. **The picker's eraser item is a fixed-width bitmap eraser** (`.eraser(.bitmap(width: 16.4))`), not `.vector`.
+4. **PencilKit clamps widths and changes eraser types.** `PKInkingTool(.pencil, width: 2)` reads back 2.4. `PKEraserTool(.bitmap, width: 12)` reads back as `.fixedWidthBitmap`, width 16.4, while `PKEraserTool(.bitmap)` has width 0. The read-back value is a fixed point, which the coordinator relies on to stop a tool write-back loop (unit tested).
+5. **Lasso stroke selections are not in `selection`.** After a lasso around two unlocked strokes, `selectedMarkup.subelements.count == 2` but `selection` (element IDs) is empty. Phase 3 `.paperSelection` needs to read stroke selections from `selectedMarkup`.
+6. **`PaperMarkup ==` tracks edit history.** The same edit made separately to two copies gives unequal values (`bounds` set to the same size on both). Equal content from one history, including a save/load round trip, compares equal. `Paper ==` inherits this; it is conservative and never reports a false "equal".
+7. **`backgroundColor` round-trips through extended sRGB**, so `Paper.Color` components come back within 1e-6 (blue 1.0000002), not exactly.
+
+Not exercised in the UI: `.disabled` (Read Only toggle) and hiding the picker from the app, because the simulated tap did not open the demo's Options menu, and the macOS markup toolbar. All three build, and their code paths are small.
