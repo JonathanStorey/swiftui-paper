@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.15, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.16, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -779,7 +779,8 @@ public struct Paper: Codable, Hashable, Sendable, Transferable {
     public init(image: CGImage, size: PaperSize)        // image stretched to the page
     public init(on base: Paper)                         // locked layer: size copied from base
 
-    public mutating func flatten()                      // merge a .paper background into the editable markup
+    public mutating func flatten()                      // merge one .paper background layer into the markup
+    public mutating func flattenAll()                   // repeat until the background is not .paper
 
     public var size: PaperSize { get set }              // forwards to markup.paperSize
     public mutating func rotate(_ turn: PaperRotation)  // turns markup and background together
@@ -817,7 +818,13 @@ let reviewed = Paper(on: original)     // original is locked underneath; new ink
 - **Rotation turns every layer.** `rotate(_:)` recurses into a `.paper` background, so all layers stay aligned.
 - **Rendering stays sharp.** In the editor, the base sheet is rendered once to single-page PDF data with `pdfData()` and shown through the same tiled PDF view, so it zooms crisply. This relies on PaperKit drawing vector output into a PDF context (already a Phase 0 check). If it doesn't, the fallback is a high-resolution bitmap re-rendered when zoom passes a threshold.
 - **Text recognition includes it.** The base sheet's handwriting and typed text count as `.background` for `recognizedText(_:)` and `search(_:in:)`, and matches report it as such.
-- **`flatten()` merges the layers.** It appends the base sheet's markup into the editable markup using PaperKit's documented `append(contentsOf: PaperMarkup)`, then replaces the background with the base sheet's own background. The base content becomes editable, and the stroke IDs are kept.
+- **`flatten()` merges one layer.** It turns the locked base sheet into editable content under the current ink:
+  1. Start from a copy of the base sheet's markup, so its content sits at the bottom.
+  2. Append the top layer's markup onto it with PaperKit's documented `append(contentsOf: PaperMarkup)`. Appending always lands on top, which is why the merge starts from the base rather than appending the base onto the top layer (that would bury the user's new ink underneath).
+  3. The result becomes `markup`, and `background` becomes the base sheet's own background (a PDF page, an image, a deeper `.paper` layer, or `nil`).
+  4. Paper color: the top layer's color wins if it has one. Otherwise the base's is kept.
+
+  When the background is not `.paper`, `flatten()` does nothing. A PDF page or image has no markup to merge, and turning it into a movable element is a different operation (`insertImage`). `flattenAll()` repeats until no `.paper` layer remains. Like any change to the binding, flattening is undoable only if the app registers it, and the app can keep the layered `Paper` value if it wants a way back. Phase 0 must confirm that `append(contentsOf:)` preserves stroke UUIDs and how it handles an ID that exists in both layers.
 - **Separate layers, not separate history.** The locked layer is plain data, so the app decides whether to keep revisions as layered `Paper` values or flatten them.
 
 ---
