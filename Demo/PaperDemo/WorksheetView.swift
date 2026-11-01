@@ -1,8 +1,11 @@
+import CoreTransferable
 import PaperUI
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// Exercises every Phase 1 API: the binding, tool, tool picker, features, content mode, zoom
-/// range, `.disabled`, `\.undoManager`, saving, and restoring on relaunch.
+/// Exercises the API through Phase 2: the binding, tool, tool picker, features, content mode,
+/// zoom range, `.disabled`, `\.undoManager`, saving and restoring, the stored PDF background,
+/// locking, rotation, a `PaperView` thumbnail, and sharing as a PDF.
 struct WorksheetView: View {
     @State private var paper = DemoStore.load()
     @State private var tool: Paper.Tool = .pen(.black, width: 3)
@@ -12,6 +15,7 @@ struct WorksheetView: View {
     @State private var contentMode: PaperContentMode = .fit
     @State private var lastSaved: Date?
     @State private var saveTask: Task<Void, Never>?
+    @State private var showThumbnail = true
     @Environment(\.undoManager) private var undoManager
 
     var body: some View {
@@ -28,6 +32,16 @@ struct WorksheetView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
             .safeAreaInset(edge: .top) { status }
+            .overlay(alignment: .topTrailing) {
+                if showThumbnail {
+                    PaperView(paper)
+                        .frame(width: 120)
+                        .shadow(radius: 4)
+                        .padding()
+                        .allowsHitTesting(false)
+                        .accessibilityIdentifier("thumbnail")
+                }
+            }
             .onChange(of: paper) { scheduleSave() }
     }
 
@@ -36,6 +50,11 @@ struct WorksheetView: View {
         ToolbarItemGroup(placement: .topBarLeading) {
             Button("Undo", systemImage: "arrow.uturn.backward") { undoManager?.undo() }
             Button("Redo", systemImage: "arrow.uturn.forward") { undoManager?.redo() }
+            Button("Lock All", systemImage: "lock") { paper.lockAll() }
+            Button("Rotate Clockwise", systemImage: "rotate.right") { paper.rotate(.clockwise) }
+            ShareLink(item: PDFExport(paper: paper), preview: SharePreview("Worksheet.pdf")) {
+                Label("Share PDF", systemImage: "square.and.arrow.up")
+            }
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
             // Compared by kind, because the system picker writes back its own widths and colors.
@@ -58,8 +77,11 @@ struct WorksheetView: View {
                 Toggle("Tool Picker", isOn: $showPicker)
                 Toggle("Read Only", isOn: $isReadOnly)
                 Toggle("Allow Text", isOn: $allowText)
+                Toggle("Thumbnail", isOn: $showThumbnail)
                 Divider()
-                Button("Lock All", systemImage: "lock") { paper.lockAll() }
+                #if DEBUG
+                Button("New Worksheet", systemImage: "doc.text") { paper = DemoStore.worksheet }
+                #endif
                 Button("Unlock All", systemImage: "lock.open") { paper.unlockAll() }
                 Button("Clear Page", systemImage: "trash", role: .destructive) { paper = Paper(size: .letter) }
             }
@@ -110,6 +132,19 @@ struct WorksheetView: View {
     }
 }
 
+/// Shares the paper as a file named Worksheet.pdf rather than as anonymous PDF data.
+struct PDFExport: Transferable {
+    let paper: Paper
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .pdf) { export in
+            let url = URL.temporaryDirectory.appending(path: "Worksheet.pdf")
+            try await export.paper.pdfData().write(to: url, options: .atomic)
+            return SentTransferredFile(url)
+        }
+    }
+}
+
 enum ToolChoice: Hashable {
     case pen, marker, eraser, lasso
 
@@ -137,7 +172,8 @@ enum ToolChoice: Hashable {
 ///
 /// Launch arguments: `-reset` starts from a blank page, `-sample` loads `Paper.sample`, `-worksheet`
 /// loads it over `Paper.samplePDF`, and
-/// `-sampleLocked` loads it with every stroke locked (for the eraser and lasso UI check).
+/// `-sampleLocked` loads it with every stroke locked (for the eraser and lasso UI check). In DEBUG,
+/// `-writePDF` also writes `Worksheet.pdf` to Documents on every save.
 enum DemoStore {
     static let url = URL.documentsDirectory.appending(path: "Worksheet.swiftpaper")
 
@@ -145,11 +181,7 @@ enum DemoStore {
         let arguments = ProcessInfo.processInfo.arguments
         #if DEBUG
         if arguments.contains("-sample") { return .sample }
-        if arguments.contains("-worksheet") {
-            var paper = Paper.samplePDF
-            paper.append(.sample)
-            return paper
-        }
+        if arguments.contains("-worksheet") { return worksheet }
         if arguments.contains("-sampleLocked") {
             var paper = Paper.sample
             paper.lockAll()
@@ -166,9 +198,24 @@ enum DemoStore {
         }
     }
 
+    #if DEBUG
+    /// The ruled sample PDF with two strokes on it.
+    static var worksheet: Paper {
+        var paper = Paper.samplePDF
+        paper.append(.sample)
+        return paper
+    }
+    #endif
+
     static func save(_ paper: Paper) async throws {
         let data = try await paper.dataRepresentation()
         try data.write(to: url, options: .atomic)
+        #if DEBUG
+        // UI checks: the same bytes the Share PDF button sends.
+        if ProcessInfo.processInfo.arguments.contains("-writePDF") {
+            try await paper.pdfData().write(to: URL.documentsDirectory.appending(path: "Worksheet.pdf"), options: .atomic)
+        }
+        #endif
     }
 }
 
