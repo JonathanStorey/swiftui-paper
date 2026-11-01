@@ -546,3 +546,28 @@ Other behavior found on the way:
 7. **`backgroundColor` round-trips through extended sRGB**, so `Paper.Color` components come back within 1e-6 (blue 1.0000002), not exactly.
 
 Not exercised in the UI: `.disabled` (Read Only toggle) and hiding the picker from the app, because the simulated tap did not open the demo's Options menu, and the macOS markup toolbar. All three build, and their code paths are small.
+
+---
+
+## F. Phase 2 checks
+
+Runtime results from `Tests/PaperUITests` (macOS 27 and the iPad Pro 11-inch (M5) iOS 27.0 simulator) and the demo on that simulator.
+
+| PLAN.md | Check | Result |
+|---|---|---|
+| §2.1 | `contentView` follows zoom and scroll | **Yes.** A tiled PDF set as `contentView`, framed to the page rect in page coordinates, stays registered with the strokes through a ~4× pinch zoom (a stroke end sits 0.30 of a rule spacing below a rule at rest and 0.29 when zoomed). No fallback needed |
+| §5.3 | PaperKit PDF output is vector | **Partly.** `PaperMarkup.draw(in:frame:)` into a PDF context writes shapes and text as vectors, but rasterizes ink: a 150 pt stroke became a 308 × 8 px image (about 144 dpi). `pdfData()` uses the fallback: vector background, shapes, and text, plus one 300 dpi ink image cropped to the ink's bounds (tested: 641 px wide for that stroke) |
+| Phase 2 | Worksheet flow in the demo | Filled in, locked, rotated, thumbnailed with `PaperView`, and exported with `pdfData()`. The eraser leaves locked strokes alone after rotation. The exported PDF is 792 × 612 with the background and ink turned together |
+
+Other behavior found on the way:
+
+1. **A custom `contentView` replaces PaperKit's white page.** With a background view installed, the page shows whatever is behind the editor (the demo's gray). The coordinator paints the paper color (`Paper.color ?? .white`) on the background view.
+2. **`MarkupOrderedSet` lists every non-ink element before every stroke**, whatever the insertion order: appending a stroke and then a shape gives `[shape, stroke]`. `elements` reports that order. The same ordering lets `pdfData()` draw the vector layer first and ink on top without changing what is drawn over what.
+3. **`MarkupOrderedSet.removeAll(where:)` never removes strokes.** On a set of two strokes and one shape, `removeAll { _ in true }` leaves the two strokes, and a predicate matching only strokes removes nothing. `removeStroke(for:)` works. Phase 3's `remove(_:)` must use it for strokes.
+4. **PaperKit's ink raster resolution follows the context's scale.** Shrinking user space by k (frame scaled up by k) cut the ink image by k; there is no option to raise it, so the fallback renders ink itself.
+5. **Content-change callbacks move the visible frame.** After pushing new markup, the controller reports a content-visible-frame change that is not a user scroll. The coordinator ignores those during a push, and any page-size change (rotate, resize) returns to the resting placement.
+6. **`PKToolPickerRulerItem` is unavailable on visionOS.** `PaperToolPickerItem.ruler` is left out of the picker there.
+7. **`UTType(exportedAs:)` only conforms to its parents where an Info.plist declares it.** `UTType.swiftPaper.conforms(to: .data)` is false in a test bundle. Apps declare `org.swiftuipaper.paper` (extension `swiftpaper`) under `UTExportedTypeDeclarations`; the demo does.
+8. **Lines have no `Paper.Shape` case.** PLAN 4.5 omits `line`, so `Element.Kind` reports a line as `.shape(.arrow)` for now. This is an open spec question for Phase 3.
+
+Not exercised in the UI: the share sheet itself. Like the Options menu, toolbar popovers do not present from simulated taps. The bytes it would send were checked instead: a DEBUG `-writePDF` launch argument writes the same `pdfData()` to Documents, and that file renders correctly.
