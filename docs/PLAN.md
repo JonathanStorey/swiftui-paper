@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.11, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.12, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -392,6 +392,35 @@ PaperView(markup, on: pdfPage)         // lower layer, same "on:" forms as Paper
 - **Not zoomable.** A read-only page that zooms is `PaperEditor` with `.disabled(true)`.
 - **Not `ImageRenderer`-compatible.** `ImageRenderer` renders synchronously and would capture the placeholder. Use `paper.image(scale:)` instead.
 
+### 4.8 Reading the page: handwriting and background text
+
+Apple's recognition reads **ink and markup only**. It never looks at the background:
+
+- `PaperMarkup.indexableContent: String?` (iOS 26) gives searchable text for the markup, meant for Spotlight-style indexing.
+- `PKStrokeRecognizer` (iOS 27, an actor) recognizes handwriting on device in 29 languages: `recognizedText()`, `indexableContent`, `search(_:)` returning matches with bounds, and recognition limited to chosen stroke IDs. Apple states the new PencilKit APIs also work with PaperKit.
+
+Text in the background comes from different frameworks:
+
+| Background | Source of text |
+|---|---|
+| Text-based PDF | PDFKit: `PDFPage.string` and `PDFSelection` bounds. Exact, instant, no recognition |
+| Scanned PDF or photo | Vision on-device OCR (`RecognizeTextRequest`, or `RecognizeDocumentsRequest` for structured documents), run on the page rendered to an image |
+
+Because `Paper` holds both layers, it is the natural place to combine them:
+
+```swift
+let text    = try await paper.recognizedText()             // background + handwriting, reading order
+let ink     = try await paper.markup.recognizedText()      // handwriting and text boxes only
+let matches = try await paper.search("invoice")            // [PaperTextMatch], each with bounds and source
+```
+
+- **`PaperTextMatch`** carries the matched text, its rect in page coordinates, and whether it came from `.ink` or `.background`, so an app can highlight results over the page or jump to them with `setContentVisibleFrame`.
+- **Background recognition is cached** per `Paper` and keyed on the background data, since it only changes when the background does. OCR on a scanned page is the slow path, so it runs once.
+- **Ink recognition follows edits.** The coordinator feeds the recognizer after each stroke ends, and stroke IDs let it re-recognize only what changed.
+- **Higher-level AI is the app's call.** Summaries, questions, or extraction can pass `recognizedText()` to Apple's Foundation Models framework. The package supplies the text and its locations, not the model.
+
+Phase 3 ships markup recognition. Background text (PDFKit first, Vision OCR second) lands in Phase 4.
+
 ---
 
 ## 5. Value types
@@ -671,7 +700,7 @@ Platforms: iOS 27, iPadOS 27, macOS 27, and visionOS 27 minimum. PaperKit itself
 | **1. Model** | `PaperModel` types, `Markup` in `PaperCore`, `Codable`/`Hashable` tests, tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes; stroke IDs survive save and reload; `paperSize` get/set round-trips; four quarter turns return an equal markup with the same IDs; `Paper` round-trips through `Codable` with its background |
 | **2. Core API** | `.paperTool`, `.paperFeatures`, `.paperToolPicker(isPresented:)`, `.disabled`, `.paperContentMode`, `.paperZoomRange`, loop-safe coordinator | Tool picker and a SwiftUI button both change the tool with no flicker; all four content modes behave through rotation |
 | **3. Interaction** | Selection (binding or callback per Phase 0), `PaperView`, image and PDF export, `onPaperGeometryChange`, insertion menu, `Image` and `PDFPageView` backgrounds, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
-| **4. Native UI** | `PaperToolbar` in pure SwiftUI | Demo app ships without `PKToolPicker` |
+| **4. Native UI and text** | `PaperToolbar` in pure SwiftUI; `recognizedText()` and `search(_:)` across ink, PDF text, and Vision OCR | Demo app ships without `PKToolPicker` |
 | **5. Platforms** | macOS (`MarkupToolbarViewController`), visionOS | Same demo runs on every supported platform |
 
 ---
