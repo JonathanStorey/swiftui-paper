@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.16, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.17, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -421,12 +421,13 @@ The filter follows SwiftUI's `Edge` / `Edge.Set` pattern: a plain enum names one
 public enum PaperTextSource: Hashable, Sendable {
     case handwriting   // ink, via PKStrokeRecognizer
     case typed         // text boxes in the markup
-    case background    // PDF text layer, Vision OCR, or a locked base sheet's markup
+    case locked        // the Paper's locked middle layer
+    case background    // PDF text layer or Vision OCR
 
     public struct Set: OptionSet, Hashable, Sendable {
-        public static let handwriting, typed, background: Set
+        public static let handwriting, typed, locked, background: Set
         public static let markup: Set = [.handwriting, .typed]
-        public static let all: Set = [.handwriting, .typed, .background]
+        public static let all: Set = [.handwriting, .typed, .locked, .background]
     }
 }
 
@@ -766,66 +767,76 @@ Key decisions:
 - **Strokes and elements are never stored separately.** Z-order lives in the markup, Apple's blob carries data we cannot reconstruct, and two editable copies eventually disagree.
 - **Off-screen rendering.** `image(scale:)`, `image(fitting:)`, and `pdfData()` are `async` because Apple's `draw(in:frame:options:)` is. See Section 4.7.
 
-### 5.6 Paper
+### 5.6 Paper: three fixed layers
+
+Every `Paper` has the same three layers, bottom to top. There is no nesting.
+
+| Layer | Property | Type | Editable in `PaperEditor` | Holds |
+|---|---|---|---|---|
+| Top | `markup` | `Markup` | Yes | Current work |
+| Middle | `locked` | `Markup` | No (visible only) | Earlier work that has been flattened |
+| Bottom | `background` | `PaperBackground?` | No | A PDF page or image template |
 
 ```swift
 public struct Paper: Codable, Hashable, Sendable, Transferable {
-    public var markup: Markup
-    public var background: PaperBackground?
+    public var markup: Markup                      // top: editable
+    public var locked: Markup                      // middle: visible, not editable (empty by default)
+    public var background: PaperBackground?        // bottom: static template
 
     public init(size: PaperSize = .letter, background: PaperBackground? = nil)
-    public init(markup: Markup, background: PaperBackground? = nil)
-    public init(pdfPage: PDFPage)                       // size from the page's media box
-    public init(image: CGImage, size: PaperSize)        // image stretched to the page
-    public init(on base: Paper)                         // locked layer: size copied from base
+    public init(markup: Markup, locked: Markup? = nil, background: PaperBackground? = nil)
+    public init(pdfPage: PDFPage)                  // size from the page's media box
+    public init(image: CGImage, size: PaperSize)   // image stretched to the page
 
-    public mutating func flatten()                      // merge one .paper background layer into the markup
-    public mutating func flattenAll()                   // repeat until the background is not .paper
+    public mutating func flatten()                 // top merges into locked; top becomes empty
+    public mutating func unlock()                  // locked merges under top; locked becomes empty
 
-    public var size: PaperSize { get set }              // forwards to markup.paperSize
-    public mutating func rotate(_ turn: PaperRotation)  // turns markup and background together
+    public var size: PaperSize { get set }         // keeps both markups the same size
+    public mutating func rotate(_ turn: PaperRotation)   // turns all three layers together
 
     public func image(scale: Double) async throws -> CGImage
     public func image(fitting box: CGSize) async throws -> CGImage
     public func pdfData() async throws -> Data
 }
 
-public indirect enum PaperBackground: Codable, Hashable, Sendable {
+public enum PaperBackground: Codable, Hashable, Sendable {
     case image(Data)       // encoded PNG / JPEG / HEIC, stretched to the page
     case pdfPage(Data)     // a single-page PDF, extracted from the source document
-    case paper(Paper)      // another sheet, shown locked underneath
 }
 ```
 
-Key decisions:
-
-- **Embedded, not referenced.** The background is stored as data, so a `Paper` is self-contained. A reference (a file URL or an ID the app resolves) would make the value meaningless outside the app that created it, which is the problem `Paper` exists to solve. Apps that can't afford embedding use the `Markup` layer.
-- **PDF pages are extracted.** `Paper(pdfPage:)` copies the one page into a single-page PDF, so the stored data covers that page, not the whole source document. Shared fonts and resources are duplicated per page, an acceptable cost for a self-contained sheet.
-- **No `.color` case.** Paper color is already stored in Apple's blob (`PaperMarkup.backgroundColor`), exposed as `markup.paperColor`. Storing it again in `PaperBackground` would recreate the two-sources-of-truth problem we removed for size.
-- **One size.** `paper.size` forwards to `markup.paperSize`. The background has no size of its own: it is always drawn to fill the page.
-- **Rotation turns everything.** `paper.rotate(.clockwise)` rotates the markup (Section 5.5) and the background together, so the template stays aligned with the ink. Both stay lossless: a PDF page gets its page rotation attribute updated (no re-rendering), and an image is rotated by whole pixels and re-encoded as PNG.
-- **Equality.** `==` checks the markup first (cheap token check) and compares background data only when the markups are equal. Backgrounds rarely change, so this almost never costs anything.
-- **`PaperBackgroundView`** is the internal view `PaperEditor(paper:)` builds from a `PaperBackground`: the tiled PDF view for `.pdfPage`, a hosted image for `.image`, and for `.paper`, see below.
-
-**Paper as a background: locked layers.** `.paper(Paper)` puts a whole sheet underneath the editable one, visible but untouchable, like tracing paper over a finished drawing. Examples: a teacher's marked-up worksheet with a student's answers on top, an annotated plan with a reviewer's notes as a separate layer, or a signature layer over a filled-in form.
+**Flatten and unlock.**
 
 ```swift
-let reviewed = Paper(on: original)     // original is locked underneath; new ink goes on top
+paper.flatten()    // "commit": the student's answers become part of the locked worksheet
+paper.unlock()     // "reopen": everything locked becomes editable again, under the current ink
 ```
 
-- **Size comes from the base.** `Paper(on:)` copies the base sheet's size, as `Paper(pdfPage:)` does for a PDF page. Ink is never stretched, because a stretched drawing would distort strokes and text.
-- **It nests.** The base sheet can have its own background (a PDF page with a teacher's markup, say), so layers stack naturally. Rendering walks down the chain, drawing the deepest background first.
-- **Rotation turns every layer.** `rotate(_:)` recurses into a `.paper` background, so all layers stay aligned.
-- **Rendering stays sharp.** In the editor, the base sheet is rendered once to single-page PDF data with `pdfData()` and shown through the same tiled PDF view, so it zooms crisply. This relies on PaperKit drawing vector output into a PDF context (already a Phase 0 check). If it doesn't, the fallback is a high-resolution bitmap re-rendered when zoom passes a threshold.
-- **Text recognition includes it.** The base sheet's handwriting and typed text count as `.background` for `recognizedText(_:)` and `search(_:in:)`, and matches report it as such.
-- **`flatten()` merges one layer.** It turns the locked base sheet into editable content under the current ink:
-  1. Start from a copy of the base sheet's markup, so its content sits at the bottom.
-  2. Append the top layer's markup onto it with PaperKit's documented `append(contentsOf: PaperMarkup)`. Appending always lands on top, which is why the merge starts from the base rather than appending the base onto the top layer (that would bury the user's new ink underneath).
-  3. The result becomes `markup`, and `background` becomes the base sheet's own background (a PDF page, an image, a deeper `.paper` layer, or `nil`).
-  4. Paper color: the top layer's color wins if it has one. Otherwise the base's is kept.
+- **`flatten()`** appends `markup` onto `locked` with PaperKit's `append(contentsOf: PaperMarkup)`, then resets `markup` to an empty markup of the same size. Appending lands on top, so the newest work stays above older work, exactly as it looked.
+- **`unlock()`** is the reverse: it starts from `locked`, appends `markup` onto it, makes the result the new `markup`, and empties `locked`. Starting from `locked` keeps the current ink on top.
+- **Repeated flattening accumulates.** Each `flatten()` adds the top layer onto whatever is already locked, so a review cycle (draw, flatten, draw, flatten) builds one locked layer in order.
+- Both are ordinary changes to the binding, undoable if the app registers them. Phase 0 check 7 confirms `append(contentsOf:)` keeps stroke UUIDs.
 
-  When the background is not `.paper`, `flatten()` does nothing. A PDF page or image has no markup to merge, and turning it into a movable element is a different operation (`insertImage`). `flattenAll()` repeats until no `.paper` layer remains. Like any change to the binding, flattening is undoable only if the app registers it, and the app can keep the layered `Paper` value if it wants a way back. Phase 0 must confirm that `append(contentsOf:)` preserves stroke UUIDs and how it handles an ID that exists in both layers.
-- **Separate layers, not separate history.** The locked layer is plain data, so the app decides whether to keep revisions as layered `Paper` values or flatten them.
+**Is the locked layer compacted? No, deliberately.** Flattening merges two markups into one `PaperMarkup`, losslessly. Every stroke stays vector with its ID, text stays searchable, and `unlock()` can bring it all back. The stored size is about the same as before flattening, since nothing is thrown away. That is the right default, because the alternatives all destroy something:
+
+| Possible compaction | Gains | Loses |
+|---|---|---|
+| Rasterize to an image | Fixed size, fast drawing | Sharpness when zoomed, stroke IDs, handwriting recognition, unlock |
+| Render to PDF | Vector, often smaller for dense ink | Stroke IDs, PencilKit recognition, unlock |
+
+If archiving ever matters, a later `flattenToBackground()` could render `markup` and `locked` into the PDF background as an explicit one-way step. It is not in v1.
+
+Key decisions:
+
+- **Fixed layers instead of nesting.** An earlier draft allowed `.paper(Paper)` backgrounds that could nest without limit. Three named layers cover the real cases (template, locked work, current work) with no recursion in rendering, rotation, or equality.
+- **Size has one meaning.** `markup` and `locked` each wrap a `PaperMarkup` with its own bounds, so `size` sets both, and every initializer and mutation keeps them equal. Reading `size` reads `markup.paperSize`.
+- **Embedded background, not referenced.** The background is stored as data, so a `Paper` is self-contained. Apps that can't afford embedding use the `Markup` layer with `PaperEditor(markup:on:)`.
+- **PDF pages are extracted.** `Paper(pdfPage:)` copies the one page into a single-page PDF. Shared fonts and resources are duplicated per page, an acceptable cost for a self-contained sheet.
+- **No `.color` background.** Paper color is stored in Apple's blob (`markup.paperColor`). `flatten()` and `unlock()` keep the top layer's color if set, otherwise the locked layer's.
+- **Rotation turns all three layers.** Markups rotate as in Section 5.5. A PDF page gets its rotation attribute updated, and an image is rotated by whole pixels and re-encoded as PNG. All lossless.
+- **Rendering stays sharp.** The editor shows `locked` through the tiled PDF view, rendered once to single-page PDF with `pdfData()` and refreshed only when `locked` changes. This relies on PaperKit drawing vector output into a PDF context (a Phase 0 check). The fallback is a high-resolution bitmap re-rendered past a zoom threshold.
+- **Text recognition sees every layer.** `PaperTextSource` gains a `.locked` case, so `recognizedText(.locked)` reads only flattened work, and `.all` reads all three layers.
+- **Equality.** `==` checks `markup`, then `locked` (cheap token checks), and compares background data last.
 
 ---
 
@@ -930,7 +941,7 @@ Checked against Apple's PaperKit reference pages and the WWDC26 PencilKit sessio
 3. **Selection setter.** Can we assign `selection` programmatically? If not, selection ships as a callback.
 4. **`bounds` setter.** Settable directly, or must the `paperSize` setter rebuild the markup? Rotation depends on this too.
 5. **Removal.** Can elements and strokes be removed by mutating `subelements`, since `PaperMarkup` documents no remove method?
-7. **`append(contentsOf:)` and IDs.** Does appending one markup onto another (used by `flatten()`) preserve stroke UUIDs, and what happens when both contain the same ID?
+7. **`append(contentsOf:)` and IDs.** Does appending one markup onto another (used by `flatten()` and `unlock()`) preserve stroke UUIDs, and what happens when both contain the same ID?
 6. **Content modes on `setContentVisibleFrame`.** Confirm `.fitWidth` + `.top` anchor and resting-scale zoom can be built on it, and what `ScrollConfiguration` exposes.
 
 ### 9.3 Other risks
