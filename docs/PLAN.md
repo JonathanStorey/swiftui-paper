@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.5, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.6, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -172,6 +172,22 @@ Keep the list short and group by concern. Each is a plain `EnvironmentValues` en
 | `.paperTouchPolicy(_ :)` | Pencil-only vs finger drawing |
 | `.paperContentMode(_ :anchor:)` | how the page sits in the view at rest: `PaperContentMode` plus a `UnitPoint` anchor (default `.center`) |
 | `.paperZoomRange(_ :)` | min/max zoom, relative to the content mode's resting scale |
+
+**Borrowed SwiftUI environment.** Before adding a `paper*` modifier, check whether SwiftUI already has one. These existing modifiers and environment values are honored by the editor, so they work on the editor or any container above it:
+
+| SwiftUI API | What the editor does with it |
+|---|---|
+| `.disabled` / `\.isEnabled` | Read-only canvas (editable flag) |
+| `.scrollDisabled` / `\.isScrollEnabled` | Locks pan and zoom at the resting position, for fixed worksheets and signature boxes |
+| `.scrollIndicators` / `\.horizontalScrollIndicatorVisibility`, `\.verticalScrollIndicatorVisibility` | Scroll indicator visibility through `scrollConfiguration`, replacing the deprecated `shows…ScrollIndicator` properties |
+| `.focused($isFocused)` | First responder, so keyboard shortcuts, the Edit menu (cut, copy, paste, select all), and hardware undo reach the canvas. Like `@FocusState` on a `TextEditor` |
+| `.onPencilDoubleTap`, `.onPencilSqueeze`, `\.preferredPencilDoubleTapAction` | Not reimplemented. When the system tool picker is hidden, apps use SwiftUI's own Pencil gestures to change the `tool` binding. When it is visible, the picker handles them |
+| `\.undoManager` | Undo (Section 4.5) |
+| `\.layoutDirection` | `.leading`/`.trailing` anchors flip in right-to-left languages, as they do everywhere else in SwiftUI |
+| `\.accessibilityReduceMotion` | Programmatic visible-frame changes (re-anchoring on rotation) skip animation |
+| `\.displayScale` | `PaperThumbnail` renders at the screen's scale |
+
+Deliberately not borrowed: `\.editMode` (overlaps `.disabled` with list-specific meaning), `.tint` (PaperKit does not expose a selection accent color), and `.backgroundStyle` (the paper color is stored in `PaperMarkup.backgroundColor`, so it is content, not environment).
 
 `PaperFeatures` is our own `Hashable`, `Sendable` struct with static members (`.latest`, `.basic`) and modifiers (`.removing(.stickers)`), translated to `FeatureSet` in the bridge.
 
@@ -455,7 +471,7 @@ Key decisions:
 - Prevents feedback loops. It records the last `token` it pushed and the last it received. `updateUIViewController` only writes markup into the view controller when the binding's token differs from both, which means the change came from outside (load, sync, programmatic insert).
 - Coalesces writes. Delegate change callbacks during an active stroke are batched so the binding updates once per stroke end, not per touch sample. If serialization is async, it refreshes the markup's snapshot in the background afterward.
 - Computes the resting scale from the content mode on every layout change (rotation, split view), keeps the user's relative zoom across those changes, and reports geometry through the transform closure.
-- Reads `\.isEnabled` and maps it to the view controller's editable flag.
+- Reads the borrowed environment values in 4.2 (`\.isEnabled`, `\.isScrollEnabled`, scroll indicator visibility, focus, layout direction, reduce motion) and applies them to the view controller.
 
 Users never see this type. All the density that tempted Option B is real, and it is handled here.
 
