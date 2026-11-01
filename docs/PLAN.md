@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.19, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.20, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -733,7 +733,8 @@ public struct Markup: Codable, Hashable, Sendable, Transferable {
     public mutating func rotate(_ turn: PaperRotation)   // right-angle increments, see below
     public mutating func remove(_ ids: some Collection<PaperElement.ID>)   // pending Phase 0
 
-    public func data() async throws -> Data        // wraps async dataRepresentation()
+    public init(dataRepresentation data: Data) throws
+    public func dataRepresentation() async throws -> Data   // wraps PaperMarkup's async version
     public var paperColor: CGColor? { get set }    // PaperMarkup.backgroundColor, part of the content
     public func image(scale: Double) async throws -> CGImage
     public func image(fitting box: CGSize) async throws -> CGImage
@@ -744,8 +745,8 @@ public struct Markup: Codable, Hashable, Sendable, Transferable {
 Key decisions:
 
 - **One source of truth, including size.** `paperSize` reads and writes the wrapped `PaperMarkup`'s bounds. Nothing is stored twice. If Apple's bounds turn out to be read-only, the setter rebuilds the markup with new bounds and re-appends its contents. Changing size after drawing extends or crops the page from the bottom-right without moving any strokes.
-- **No serialization on the hot path.** Holding a live `PaperMarkup` means the coordinator can update the binding at stroke end without encoding anything. Serialization happens only in `data()` and `encode(to:)`. This matters because `dataRepresentation()` is `async throws` (confirmed), which makes synchronous `Data` storage impossible.
-- **`Codable` with an async source.** `encode(to:)` is synchronous but `dataRepresentation()` is async, so `Markup` keeps a serialized snapshot that the coordinator refreshes in the background after each stroke, and `encode(to:)` writes that snapshot. Apps that need guaranteed-fresh bytes call `try await markup.data()`. Decoding is simple because `init(dataRepresentation:)` is synchronous.
+- **No serialization on the hot path.** Holding a live `PaperMarkup` means the coordinator can update the binding at stroke end without encoding anything. Serialization happens only in `dataRepresentation()` and `encode(to:)`. This matters because `dataRepresentation()` is `async throws` (confirmed), which makes synchronous `Data` storage impossible.
+- **`Codable` with an async source.** `encode(to:)` is synchronous but `dataRepresentation()` is async, so `Markup` keeps a serialized snapshot that the coordinator refreshes in the background after each stroke, and `encode(to:)` writes that snapshot. Apps that need guaranteed-fresh bytes call `try await markup.dataRepresentation()`. Decoding is simple because `init(dataRepresentation:)` is synchronous.
 - **Projections are cached safely.** `strokes` and `elements` decode once per token and are stored in a private `final class` box guarded by a `Mutex`. Mutations replace the box (copy-on-write), so copies never share stale caches and the type stays `Sendable`.
 - **Cheap equality.** `==` returns true immediately when tokens match. Otherwise it falls back to Apple's own `Equatable` conformance on `PaperMarkup`. `hash` uses `paperSize` only, which is coarse but always consistent with `==`.
 - **Rotation is a content edit, in right angles only.** `markup.rotate(.clockwise)` turns the page the way Preview's Rotate Left/Right does: the paper size swaps width and height, and every stroke and element turns with it. Because the page is truly rotated, it saves, exports, and prints rotated with no extra orientation flag to track.
@@ -787,6 +788,9 @@ public struct Paper: Codable, Hashable, Sendable, Transferable {
     public init(markup: Markup, locked: Markup? = nil, background: PaperBackground? = nil)
     public init(pdfPage: PDFPage)                  // size from the page's media box
     public init(image: CGImage, size: PaperSize)   // image stretched to the page
+    public init(dataRepresentation data: Data) throws         // mirrors PaperMarkup
+
+    public func dataRepresentation() async throws -> Data      // guaranteed-fresh bytes for saving
 
     public mutating func flatten()                 // top merges into locked; top becomes empty
     public mutating func unlock()                  // locked merges under top; locked becomes empty
@@ -806,6 +810,21 @@ public enum PaperBackground: Codable, Hashable, Sendable {
     case pdfPage(Data)     // a single-page PDF, extracted from the source document
 }
 ```
+
+**Saving: `dataRepresentation()`.** `Paper` mirrors Apple's own pair on `PaperMarkup`, so saving looks the same at both levels:
+
+```swift
+let data  = try await paper.dataRepresentation()      // save to disk, CloudKit, SwiftData
+let paper = try Paper(dataRepresentation: data)       // load: synchronous, like Apple's
+```
+
+- **Why async.** It awaits each `PaperMarkup.dataRepresentation()` (async in PaperKit), so the bytes always include the latest stroke. `Codable` stays for embedding a `Paper` inside a larger app model, but its synchronous `encode(to:)` can only write the coordinator's background snapshot, which may trail the newest stroke by a moment. Use `dataRepresentation()` whenever freshness matters, such as saving on scene backgrounding.
+- **Format.** A small versioned container encoded as a binary property list: a format version, the top and locked `PaperMarkup` blobs exactly as Apple produced them, and the background data. A binary plist stores `Data` as raw bytes, while JSON would inflate every blob by a third with base64. The version number lets future releases read old files.
+- **File type.** A custom `UTType` (`.swiftPaper`, conforming to `public.data`) used by `Transferable` and by apps that save `.swiftpaper` files. Apps declare it in their Info.plist as usual.
+- **SwiftData.** Store the bytes in a `Data` property marked `@Attribute(.externalStorage)` so large backgrounds live outside the database.
+- **Three save formats, three jobs.** `dataRepresentation()` keeps everything editable. `pdfData()` is for people: viewing, sending, printing. `archived()` keeps a `Paper` that can no longer change.
+
+`Markup` gets the same pair (`init(dataRepresentation data: Data) throws` and `func dataRepresentation() async throws -> Data`) for apps on the lower layer.
 
 **Flatten and unlock.**
 
