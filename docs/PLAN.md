@@ -1,34 +1,34 @@
 # SwiftUI Paper: API Specification and Build Plan
 
-**Status:** v2.0 · **Date:** 2026-11-01 · Decision history lives in [REVIEW.md](REVIEW.md) and the git log.
+**Status:** v2.1 · **Date:** 2026-11-01 · Decision history is in [REVIEW.md](REVIEW.md) and the git log. SDK evidence is in `docs/SDK-FINDINGS.md` (branch `phase1/sdk-findings`).
 
-SwiftUI Paper wraps Apple's PaperKit (and the iOS 27 PencilKit additions it builds on) in an API that reads like native SwiftUI. Its scope is **one sheet of paper**: an editor, a read-only view, and the value types they work with. Files, multi-page documents, and app metadata belong to the app.
+SwiftUI Paper wraps Apple's PaperKit, and the iOS 27 PencilKit features it builds on, in an API that reads like native SwiftUI. The scope is **one sheet of paper**: an editor, a read-only view, and one value type, `Paper`. Files, multi-page documents, and app metadata belong to the app.
 
-**Platforms:** iOS, iPadOS, macOS, visionOS 27+. Swift 6 language mode, strict concurrency. Backward compatibility (older OS versions, older PaperKit feature sets, PencilKit `PKDrawing` import) is intentionally out of scope.
+**Platforms:** iOS, iPadOS, macOS, and visionOS 27+. Swift 6.4 tools, Swift 6 language mode, strict concurrency. Backward compatibility is out of scope: no older OS versions, no older PaperKit feature sets, and no `PKDrawing` import.
 
-**Design rules used throughout**
+**Design rules**
 
-- Content is a value the app owns (`Paper`, `Markup`), bound like `TextEditor(text:)`.
+- `Paper` is a value the app owns, bound like `TextEditor(text:)`.
+- Value types are nested under `Paper` (`Paper.Tool`, `Paper.Size`), the way `Font.Weight` and `Image.ResizingMode` are nested. Views and editor settings are top-level `Paper…` names (`PaperEditor`, `PaperContentMode`).
 - Initializers say what a view *is*. Modifiers say how it *behaves*.
-- If SwiftUI already has a modifier or environment value for something, use it instead of inventing a `paper*` one.
-- Two-way interaction state is a binding to a small value type, like `@FocusState`.
-- No public coordinator, context object, proxy, or custom property wrapper.
-- Every public type is `Sendable`. Value types are `Hashable`, and `Codable` where storing them makes sense.
+- Where SwiftUI already has a modifier or environment value, use it instead of a new `paper…` modifier.
+- Two-way interaction state is a binding to a small value, like `@FocusState`.
+- There is no public coordinator, context object, proxy, or custom property wrapper.
+- Every public type is `Sendable`. Values are `Hashable`, and `Codable` where storing them makes sense.
 
-> Items marked **(verify)** depend on PaperKit behavior Apple's documentation doesn't state. Each has a fallback in Section 8 and is resolved during Phase 1.
+> **(UI check)** marks behavior that the SDK headers can't settle and a running app must confirm. Each one has a fallback.
 
 ---
 
 ## 1. Overview
 
 ```
-┌──────────── Views ─────────────┐   ┌────────── Values ──────────┐
-│ PaperEditor   edit, zoom       │   │ Paper                      │
-│ PaperView     read-only render │◀──│  ├─ markup:  Markup  (top) │
-│ PDFPageView   sharp PDF page   │   │  ├─ locked:  Markup  (mid) │
-└────────────────────────────────┘   │  └─ background (bottom)    │
-                                     │ Markup ── wraps PaperMarkup│
-                                     └────────────────────────────┘
+Views                                   Value
+─────                                   ─────
+PaperEditor   edit, zoom      ◀────▶   Paper
+PaperView     read-only render          ├─ elements: ink, shapes, text boxes, images
+PDFPageView   sharp PDF page            │    (each one editable or locked)
+                                        └─ background: PDF page or image (optional)
 ```
 
 ```swift
@@ -36,7 +36,7 @@ import PaperUI
 
 struct WorksheetView: View {
     @State private var paper = Paper(pdfPage: worksheetPage)
-    @State private var tool: PaperTool = .pen(.black, width: 3)
+    @State private var tool: Paper.Tool = .pen(.black, width: 3)
     @State private var position = PaperScrollPosition()
     @State private var showPicker = true
 
@@ -47,7 +47,7 @@ struct WorksheetView: View {
             .paperContentMode(.fitWidth, anchor: .top)
             .paperScrollPosition($position)
             .toolbar {
-                Button("Submit") { paper.flatten() }
+                Button("Submit") { paper.lockAll() }
                 ShareLink(item: paper, preview: SharePreview("Worksheet"))
             }
     }
@@ -62,61 +62,53 @@ struct WorksheetView: View {
 
 ```swift
 public struct PaperEditor<Background: View>: View {
-    public init(markup: Binding<Markup>, @ViewBuilder on background: () -> Background)
+    public init(paper: Binding<Paper>, @ViewBuilder on background: () -> Background)
 }
 extension PaperEditor where Background == PaperBackgroundView {
-    public init(paper: Binding<Paper>)                       // the usual form
-}
-extension PaperEditor where Background == EmptyView {
-    public init(markup: Binding<Markup>)                     // plain paper
+    public init(paper: Binding<Paper>)                       // uses paper.background, if any
 }
 extension PaperEditor where Background == Image {
-    public init(markup: Binding<Markup>, on image: Image)
+    public init(paper: Binding<Paper>, on image: Image)
 }
 extension PaperEditor where Background == PDFPageView {
-    public init(markup: Binding<Markup>, on page: PDFPage)
+    public init(paper: Binding<Paper>, on page: PDFPage)
 }
 ```
 
 **Behavior**
 
-- **Editing.** With `paper:`, only `paper.markup` is editable. `paper.locked` and `paper.background` are visible underneath and cannot be touched. The `markup:` forms are for apps that manage backgrounds themselves.
-- **Sizing.** Greedy: fills the space offered, like `Color` or a `.resizable()` image. Its ideal size (from `sizeThatFits` with an unspecified proposal) is the paper size, so `.aspectRatio(contentMode:)` works if applied.
-- **Page placement.** Set by `.paperContentMode(_:anchor:)` (Section 3.2). The page keeps its own size, so rotation of the device never moves strokes.
-- **Background framing.** Any background is laid out in the page rect and scales with zoom.
-- **Initializers never write to the binding.** Matching a markup to a PDF page's size happens when the value is created (`Paper(pdfPage:)`, `PaperSize(page)`).
+- **Backgrounds.** `init(paper:)` shows the background stored in the `Paper`. The `on:` forms supply a background the app manages itself, such as pages from a large shared PDF, and they take precedence over a stored one.
+- **Editing.** Editable elements can be drawn on, selected, and changed. Locked elements are visible but can't be selected, moved, resized, restyled, or deleted.
+- **Sizing.** Greedy: fills the space offered. Its ideal size is the paper size, so `.aspectRatio(contentMode:)` works if applied.
+- **Page placement.** Set by `.paperContentMode(_:anchor:)` (Section 5.1). The page keeps its own size, so rotating the device never moves strokes.
+- **No binding writes in `init`.** A `Paper` matched to a PDF page's size is created with `Paper(pdfPage:)` or `Paper.Size(page)`.
 
 **Internals**
 
-- `UIViewControllerRepresentable` (`NSViewControllerRepresentable` on macOS) wrapping `PaperMarkupViewController`, created with `supportedFeatureSet` from `.paperFeatures` (default `.latest`).
-- Backgrounds become `PaperMarkupViewController.contentView`, framed to the page rect:
-  - View builder and `Image`: the view is placed in a `UIHostingController`, and its view is assigned. (A SwiftUI `Image` can't be turned back into a `UIImage`.)
-  - `PDFPage`: a native `CATiledLayer` view drawing the page with PDFKit, which stays sharp at every zoom.
-  - `paper:` form: a stacked view (`PaperBackgroundView`) with the background (PDF tiled view or hosted image) at the bottom and `locked` above it. `locked` is rendered once to an untagged single-page PDF and shown through the tiled view, then re-rendered only when `locked` changes.
-- Whether `contentView` follows zoom and scroll automatically is **(verify)**. Fallback: the coordinator applies the scroll view's transform to `contentView` itself.
+- `UIViewControllerRepresentable` (`NSViewControllerRepresentable` on macOS) wrapping `PaperMarkupViewController(markup:supportedFeatureSet:)`.
+- The background becomes `contentView`, framed to the page rect:
+  - View builder and `Image`: placed in a `UIHostingController`, whose view is assigned.
+  - `PDFPage` and stored `.pdfPage` backgrounds: a native `CATiledLayer` view drawing with PDFKit, sharp at every zoom.
+- **(UI check)** Does `contentView` follow zoom and scroll on its own? Fallback: the coordinator applies the scroll transform to it.
 
 ### 2.2 `PaperView` (read-only, also the thumbnail)
 
 ```swift
 public struct PaperView<Background: View>: View {
-    public init(_ markup: Markup, @ViewBuilder on background: () -> Background)
+    public init(_ paper: Paper, @ViewBuilder on background: () -> Background)
 }
 extension PaperView where Background == PaperBackgroundView { public init(_ paper: Paper) }
-extension PaperView where Background == EmptyView          { public init(_ markup: Markup) }
-extension PaperView where Background == Image              { public init(_ markup: Markup, on image: Image) }
-extension PaperView where Background == PDFPageView        { public init(_ markup: Markup, on page: PDFPage) }
+extension PaperView where Background == Image              { public init(_ paper: Paper, on image: Image) }
+extension PaperView where Background == PDFPageView        { public init(_ paper: Paper, on page: PDFPage) }
 ```
 
-**Behavior**
-
 - Renders a bitmap at its laid-out size times `\.displayScale`, so a 120 pt thumbnail costs a 120 pt render.
-- Ideal size is the paper size, and it keeps the page's aspect ratio, so `.frame(width: 120)` alone gives a correctly shaped thumbnail.
-- Async like `AsyncImage`: shows the paper color until rendering finishes.
+- Ideal size is the paper size, and it keeps the page's aspect ratio, so `.frame(width: 120)` gives a correctly shaped thumbnail.
+- Async like `AsyncImage`. The paper color shows until rendering finishes.
 - Not zoomable. For a zoomable read-only page, use `PaperEditor(...).disabled(true)`.
-- Default `accessibilityLabel` is the markup's `indexableContent`.
-- Not usable with `ImageRenderer` (it renders synchronously and would capture the placeholder). Use `paper.image(scale:)`.
-
-**Internals:** `.task(id:)` keyed on content tokens plus size, calling `image(fitting:)`. Results cached by token and size in a process-wide `NSCache`.
+- The default `accessibilityLabel` is the paper's indexable text.
+- Not usable with `ImageRenderer`. Use `paper.image(scale:)` instead.
+- **Internals:** `.task(id:)` keyed on the paper's token and the view size, calling `image(fitting:)`. Results are cached in a process-wide `NSCache`.
 
 ### 2.3 `PDFPageView`
 
@@ -126,7 +118,7 @@ public struct PDFPageView: View {
 }
 ```
 
-A SwiftUI face for the same tiled PDF view the editor uses. Usable on its own.
+The same tiled PDF view the editor uses, usable on its own.
 
 ---
 
@@ -136,60 +128,60 @@ A SwiftUI face for the same tiled PDF view the editor uses. Usable on its own.
 
 ```swift
 extension View {
-    public func paperTool(_ tool: Binding<PaperTool>) -> some View
-    public func paperSelection(_ selection: Binding<PaperSelection>) -> some View          // (verify) setter
+    public func paperTool(_ tool: Binding<Paper.Tool>) -> some View
+    public func paperSelection(_ selection: Binding<Paper.Selection>) -> some View
     public func paperScrollPosition(_ position: Binding<PaperScrollPosition>) -> some View
     public func paperToolPicker(isPresented: Binding<Bool>, items: [PaperToolPickerItem] = PaperToolPickerItem.standard) -> some View
     public func paperInsertionMenu(isPresented: Binding<Bool>) -> some View
+    public func paperAdornments(_ adornments: Binding<[PaperAdornment]>, onTap action: @escaping (_ id: PaperAdornment.ID) -> Void = { _ in }) -> some View
 }
 ```
 
 | Modifier | Behavior | PaperKit underneath |
 |---|---|---|
-| `paperTool(_:)` | Two-way. Picking a tool in the system picker writes back. Choosing a custom picker item sets `.custom(id:)` | `drawingTool: any PKTool`, `PKToolPickerObserver` |
-| `paperSelection(_:)` | Two-way if PaperKit allows setting. Otherwise, read through `onPaperSelectionChange` | `selection: Set<MarkupOrderedSet.ElementID>` |
+| `paperTool(_:)` | Picking a tool in the system picker writes back. A custom picker item sets `.custom(id:)` | `drawingTool`, `PKToolPickerObserver` |
+| `paperSelection(_:)` | Fully two-way. Locked elements are never selected | `selection: Set<MarkupOrderedSet.ElementID> { get set }` |
 | `paperScrollPosition(_:)` | The app calls methods on the value. The editor scrolls and reports `visibleRect` back | `setContentVisibleFrame(_:animated:)`, `contentVisibleFrame` |
-| `paperToolPicker(isPresented:items:)` | System tool picker on iOS and visionOS, Apple's markup toolbar on macOS. The user can dismiss it, so it is a binding | `PKToolPicker` / `MarkupToolbarViewController` |
-| `paperInsertionMenu(isPresented:)` | Apple's insertion menu for shapes, text, images, and signatures | `MarkupEditViewController` |
+| `paperToolPicker(isPresented:items:)` | System tool picker on iOS and visionOS. Markup toolbar on macOS | `PKToolPicker` / `MarkupToolbarViewController` |
+| `paperInsertionMenu(isPresented:)` | Apple's menu for inserting shapes, text, images, and signatures | `MarkupEditViewController` |
+| `paperAdornments(_:onTap:)` | App badges placed on the page. Dragging writes back positions | `adornments`, delegate tap and update callbacks |
 
 ### 3.2 Configuration
 
 ```swift
 extension View {
-    public func paperFeatures(_ features: PaperFeatures) -> some View
+    public func paperFeatures(_ features: Paper.Features) -> some View
     public func paperContentMode(_ mode: PaperContentMode, anchor: UnitPoint = .center) -> some View
     public func paperZoomRange(_ range: ClosedRange<CGFloat>) -> some View
-    public func paperInput(direct: PaperTouchMode = .automatic, pointer: PaperTouchMode = .automatic) -> some View
-    public func paperRulerActive(_ isActive: Bool) -> some View
+    public func paperInput(direct: PaperTouchMode = .automatic, pointer: PaperTouchMode = .select) -> some View
+    public func paperRulerActive(_ isActive: Bool) -> some View                     // iOS and visionOS
     public func paperToolPickerAccessory(_ title: LocalizedStringKey, systemImage: String, action: @escaping () -> Void) -> some View
-    public func paperAdornments(_ adornments: [PaperAdornment]) -> some View             // (verify) shape
 }
 ```
 
-All are environment values, so they apply to every editor below them.
+These are environment values, so they apply to every editor below them.
 
-| Modifier | Behavior | PaperKit underneath |
+| Modifier | Default | PaperKit underneath |
 |---|---|---|
-| `paperFeatures(_:)` | Which tools and elements exist. Default `.latest` | `supportedFeatureSet: FeatureSet` |
-| `paperContentMode(_:anchor:)` | How the page sits in the view at rest (Section 5.1). Default `.fit`, `.center` | `setContentVisibleFrame`, `zoomRange` |
-| `paperZoomRange(_:)` | Min and max zoom, where `1` is the content mode's resting scale. Default `1...4` | `zoomRange` |
-| `paperInput(direct:pointer:)` | `direct`: finger. `pointer`: trackpad or mouse | `directTouchMode`, `directTouchAutomaticallyDraws`, `indirectPointerTouchMode` |
-| `paperRulerActive(_:)` | Shows the ruler | `isRulerActive` |
-| `paperToolPickerAccessory(...)` | One accessory button in the tool picker | `PKToolPicker.accessoryItem` |
-| `paperAdornments(_:)` | App-supplied adornments on markup | `adornments`, `adornmentFrame(for:)` |
+| `paperFeatures(_:)` | `.latest` | `supportedFeatureSet: FeatureSet` |
+| `paperContentMode(_:anchor:)` | `.fit`, `.center` | `setContentVisibleFrame`, `zoomRange` |
+| `paperZoomRange(_:)` | `1...4`, where `1` is the content mode's resting scale | `zoomRange` |
+| `paperInput(direct:pointer:)` | finger follows the system setting; trackpad or mouse selects | `directTouchMode`, `directTouchAutomaticallyDraws`, `indirectPointerTouchMode` |
+| `paperRulerActive(_:)` | `false` | `isRulerActive` (not on macOS) |
+| `paperToolPickerAccessory(...)` | none | `PKToolPicker.accessoryItem` |
 
 ### 3.3 Events
 
 ```swift
 extension View {
     public func onPaperGeometryChange<T: Equatable>(for type: T.Type, of transform: @escaping (PaperGeometry) -> T, action: @escaping (_ oldValue: T, _ newValue: T) -> Void) -> some View
-    public func onPaperSelectionChange(perform action: @escaping (_ selection: PaperSelection, _ selectedContent: Markup) -> Void) -> some View
+    public func onPaperSelectionChange(perform action: @escaping (_ selection: Paper.Selection, _ selectedContent: Paper) -> Void) -> some View
     public func onPaperDrawingBegan(perform action: @escaping () -> Void) -> some View
 }
 ```
 
-- `onPaperGeometryChange` fires only when the transformed value changes, as `onScrollGeometryChange` does.
-- `onPaperSelectionChange` passes the selected content as its own `Markup` (from `selectedMarkup`), ready to copy or share.
+- `onPaperGeometryChange` fires only when the transformed value changes.
+- `onPaperSelectionChange` passes the selection as its own `Paper` (from `selectedMarkup`), ready to copy or share.
 - Content changes need no event: use `.onChange(of: paper)`.
 
 ### 3.4 Borrowed SwiftUI modifiers and environment
@@ -200,285 +192,307 @@ extension View {
 | `.scrollDisabled` / `\.isScrollEnabled` | Locks pan and zoom at rest |
 | `.scrollIndicators` | Indicator visibility via `scrollConfiguration` |
 | `.focused($isFocused)` | First responder: keyboard shortcuts, Edit menu, hardware undo |
-| `\.undoManager` | Exposes the controller's `undoManager` |
+| `\.undoManager` | The controller's `undoManager` (iOS and visionOS) |
 | `.onPencilDoubleTap`, `.onPencilSqueeze` | Not reimplemented. Apps change the `tool` binding from them when the picker is hidden |
-| `\.layoutDirection` | `.leading`/`.trailing` anchors flip in right-to-left languages |
+| `\.layoutDirection` | `.leading` and `.trailing` anchors flip in right-to-left languages |
 | `\.accessibilityReduceMotion` | Programmatic scrolling is not animated |
 | `\.displayScale` | `PaperView` render resolution |
-| `.accessibilityLabel` | Overrides the default label taken from `indexableContent` |
+| `.accessibilityLabel` | Overrides the default label |
 
-**Undo rule:** drawing and editing in the canvas are undoable through `\.undoManager`. Changes the app writes to the binding (inserting, flattening, loading) are undoable only if the app registers them.
+**Undo rule:** drawing and editing in the canvas are undoable through `\.undoManager`. Changes the app writes to the binding (inserting, locking, loading) are undoable only if the app registers them.
 
 ---
 
-## 4. Value types
+## 4. `Paper` and its nested types
 
-### 4.1 `Paper`: one self-contained sheet
+### 4.1 `Paper`
 
 ```swift
 public struct Paper: Codable, Hashable, Sendable, Transferable {
-    public var markup: Markup                       // top: editable
-    public var locked: Markup                       // middle: visible, not editable; empty by default
-    public var background: PaperBackground?         // bottom: static template
-
-    public init(size: PaperSize = .letter, background: PaperBackground? = nil)
-    public init(markup: Markup, locked: Markup? = nil, background: PaperBackground? = nil)
-    public init(pdfPage: PDFPage)                   // size from the page's media box
-    public init(image: CGImage, size: PaperSize)    // image stretched to the page
+    // Creating
+    public init(size: Paper.Size = .letter, background: Paper.Background? = nil)
+    public init(pdfPage: PDFPage)                            // size from the page's media box
+    public init(image: CGImage, size: Paper.Size)            // image stretched to the page
     public init(dataRepresentation data: Data) throws
 
-    public var size: PaperSize { get set }          // keeps markup and locked the same size
-    public var isEmpty: Bool { get }                // markup and locked both empty
+    // Page
+    public var size: Paper.Size { get set }                  // extends or crops; content stays put
+    public var color: Paper.Color? { get set }               // paper color
+    public var background: Paper.Background?
+    public var isEmpty: Bool { get }
+    public var contentBounds: CGRect { get }
+    public mutating func rotate(_ turn: Paper.Rotation)
+    public mutating func resize(to size: Paper.Size, scalingContent: Bool)
 
-    // Layers
-    public mutating func flatten()                  // markup appended onto locked; markup emptied
-    public mutating func unlock()                   // locked placed under markup; locked emptied
-    public mutating func archive() async throws     // all layers baked into a searchable PDF background
+    // Reading content
+    public var elements: [Paper.Element] { get }             // bottom to top
+    public var strokes: [Paper.Stroke] { get }
+
+    // Editing content
+    public mutating func insertShape(_ shape: Paper.Shape, style: Paper.ShapeStyle, in frame: CGRect, rotation: Angle = .zero)
+    public mutating func insertLine(from start: CGPoint, to end: CGPoint, style: Paper.ShapeStyle, startArrow: Bool = false, endArrow: Bool = false)
+    public mutating func insertText(_ text: AttributedString, in frame: CGRect, rotation: Angle = .zero)
+    public mutating func insertImage(_ image: CGImage, in frame: CGRect, rotation: Angle = .zero)
+    public mutating func remove(_ ids: some Collection<Paper.Element.ID>)
+    public mutating func append(_ other: Paper)              // other's elements land on top
+
+    // Locking
+    public mutating func lock(_ ids: some Collection<Paper.Element.ID>)
+    public mutating func unlock(_ ids: some Collection<Paper.Element.ID>)
+    public mutating func lockAll()
+    public mutating func unlockAll()
+
+    // Archiving
+    public mutating func archive() async throws              // everything baked into a searchable PDF background
     public func archived() async throws -> Paper
-
-    // Page edits
-    public mutating func rotate(_ turn: PaperRotation)
-    public mutating func resize(to size: PaperSize, scalingContent: Bool)
 
     // Saving and output
     public func dataRepresentation() async throws -> Data
-    public func pdfData() async throws -> Data      // searchable PDF, same bytes archive() stores
+    public func pdfData() async throws -> Data               // searchable; same bytes archive() stores
     public func image(scale: Double) async throws -> CGImage
     public func image(fitting box: CGSize) async throws -> CGImage
 
     // Text
-    public func recognizedText(_ sources: PaperTextSource.Set = .all) async throws -> String
-    public func search(_ query: String, in sources: PaperTextSource.Set = .all) async throws -> [PaperTextMatch]
-}
-
-public enum PaperBackground: Codable, Hashable, Sendable {
-    case image(Data)        // encoded PNG / JPEG / HEIC, stretched to the page
-    case pdfPage(Data)      // a single-page PDF extracted from the source document
+    public func indexableText() async -> String?
+    public func recognizedText(_ sources: Paper.TextSource.Set = .all) async throws -> String
+    public func search(_ query: String, in sources: Paper.TextSource.Set = .all) async throws -> [Paper.TextMatch]
 }
 ```
 
-`Transferable` representations: `.swiftPaper` (custom `UTType` conforming to `public.data`), PDF (from `pdfData()`), and PNG (from `image(scale: 2)`).
+All coordinates are page coordinates in points, with the origin at the top left. `Transferable` representations: `.swiftPaper` (a custom `UTType` conforming to `public.data`), PDF (from `pdfData()`), and PNG (from `image(scale: 2)`).
 
-### 4.2 `Markup`: the content layer
+### 4.2 Page types
 
 ```swift
-public struct Markup: Codable, Hashable, Sendable, Transferable {
-    public init(paperSize: PaperSize = .letter)
-    public init(dataRepresentation data: Data) throws
+extension Paper {
+    public struct Size: Codable, Hashable, Sendable {
+        public var size: CGSize                                  // points, 72 per inch
+        public init(_ size: CGSize)
+        public init(width: Measurement<UnitLength>, height: Measurement<UnitLength>)
+        public init(_ page: PDFPage)                             // media box
+        public static let letter, legal, a4, a5, square: Size
+        public static func inches(_ width: Double, _ height: Double) -> Size
+        public static func millimeters(_ width: Double, _ height: Double) -> Size
+        public var landscape: Size { get }
+    }
 
-    public var paperSize: PaperSize { get set }     // PaperMarkup.bounds
-    public var paperColor: CGColor? { get set }     // PaperMarkup.backgroundColor
-    public var isEmpty: Bool { get }
-    public var contentBounds: CGRect { get }        // PaperMarkup.contentsRenderFrame
-    public var indexableContent: String? { get }    // PaperMarkup.indexableContent
+    public enum Background: Codable, Hashable, Sendable {
+        case image(Data)          // encoded PNG / JPEG / HEIC, stretched to the page
+        case pdfPage(Data)        // single-page PDF extracted from the source document
+    }
 
-    // Read-only projections
-    public var elements: [PaperElement] { get }
-    public var strokes: [PaperStroke] { get }       // (verify) ink readable via subelements
+    public enum Rotation: Hashable, Sendable, CaseIterable { case clockwise, counterclockwise, halfTurn }
 
-    // Edits
-    public mutating func insertShape(_ shape: PaperShape, style: PaperShapeStyle, in frame: CGRect, rotation: Angle = .zero)
-    public mutating func insertLine(from start: CGPoint, to end: CGPoint, style: PaperShapeStyle, startArrow: Bool = false, endArrow: Bool = false)
-    public mutating func insertText(_ text: AttributedString, in frame: CGRect, rotation: Angle = .zero)
-    public mutating func insertImage(_ image: CGImage, in frame: CGRect, rotation: Angle = .zero)
-    public mutating func remove(_ ids: some Collection<PaperElement.ID>)        // (verify)
-    public mutating func erase(along path: CGPath, width: CGFloat)
-    public mutating func append(_ other: Markup)                                // other lands on top
-    public mutating func rotate(_ turn: PaperRotation)
-    public mutating func resize(to size: PaperSize, scalingContent: Bool)
-
-    // Saving and output (no background)
-    public func dataRepresentation() async throws -> Data
-    public func pdfData() async throws -> Data
-    public func image(scale: Double) async throws -> CGImage
-    public func image(fitting box: CGSize) async throws -> CGImage
-
-    // Text (sources .handwriting and .typed)
-    public func recognizedText(_ sources: PaperTextSource.Set = .markup) async throws -> String
-    public func search(_ query: String, in sources: PaperTextSource.Set = .markup) async throws -> [PaperTextMatch]
+    public struct Color: Codable, Hashable, Sendable {
+        public var red, green, blue, opacity: Float             // linear; may exceed 1.0 for HDR
+        public static let black, white, red, blue, green, yellow: Color
+    }
 }
+// PaperUI: Paper.Color.init(_ resolved: SwiftUI.Color.Resolved),
+//          init(_ color: SwiftUI.Color, in environment: EnvironmentValues), var color: SwiftUI.Color
 ```
 
-All coordinates are page coordinates in points, with the origin at the top left.
-
-### 4.3 Elements, strokes, and selection
+### 4.3 Content types
 
 ```swift
-public struct PaperElement: Identifiable, Hashable, Sendable {
-    public struct ID: Hashable, Codable, Sendable { }   // wraps MarkupOrderedSet.ElementID
-    public enum Kind: Hashable, Sendable { case stroke(PaperStroke.ID), shape, line, text, image, other }
-    public let id: ID
-    public let kind: Kind
-    public let frame: CGRect
-}
+extension Paper {
+    public struct Element: Identifiable, Hashable, Sendable {
+        public struct ID: Hashable, Codable, Sendable { }       // wraps MarkupOrderedSet.ElementID
+        public enum Kind: Hashable, Sendable {
+            case stroke(Paper.Stroke.ID)
+            case shape(Paper.Shape)
+            case text                                            // a rectangle shape holding attributed text
+            case image
+            case link
+            case loupe
+        }
+        public let id: ID
+        public let kind: Kind
+        public let frame: CGRect
+        public let isLocked: Bool                                // allowedInteractions == .readOnly
+    }
 
-public struct PaperStroke: Identifiable, Codable, Hashable, Sendable {
-    public struct ID: Hashable, Codable, Sendable { }   // wraps PKStroke.id (UUID, iOS 27)
-    public let id: ID
-    public let ink: PaperInk
-    public let points: [PaperStrokePoint]
-    public let transform: CGAffineTransform
-    public let mask: CGPath?
-    public let randomSeed: UInt32
-    public var path: CGPath { get }                     // PKStrokePath → Bézier (iOS 27)
-}
+    public struct Stroke: Identifiable, Codable, Hashable, Sendable {
+        public struct ID: Hashable, Codable, Sendable { }       // wraps PKStroke.id (UUID)
+        public struct Point: Codable, Hashable, Sendable {
+            public let location: CGPoint
+            public let timeOffset: TimeInterval
+            public let size: CGSize
+            public let opacity: CGFloat
+            public let force: CGFloat
+            public let azimuth: CGFloat
+            public let altitude: CGFloat
+        }
+        public let id: ID
+        public let ink: Paper.Ink
+        public let points: [Point]
+        public let transform: CGAffineTransform
+        public let mask: CGPath?
+        public let randomSeed: UInt32
+        public var path: CGPath { get }                          // PKStrokePath to Bézier
+    }
 
-public struct PaperStrokePoint: Codable, Hashable, Sendable {
-    public let location: CGPoint
-    public let timeOffset: TimeInterval
-    public let size: CGSize
-    public let opacity: CGFloat
-    public let force: CGFloat
-    public let azimuth: CGFloat
-    public let altitude: CGFloat
+    public struct Selection: Hashable, Sendable {
+        public init()
+        public init(_ ids: some Collection<Paper.Element.ID>)
+        public var ids: Set<Paper.Element.ID>
+        public var isEmpty: Bool { get }
+        public mutating func clear()
+    }
 }
-
-public struct PaperSelection: Hashable, Sendable {
-    public init()
-    public var ids: Set<PaperElement.ID>
-    public var isEmpty: Bool { get }
-    public mutating func clear()
-}
+// PaperUI: extension Path { public init(_ stroke: Paper.Stroke) }
 ```
 
-`PaperUI` adds `extension Path { public init(_ stroke: PaperStroke) }`. Strokes and elements are snapshots: fields are `let`, and all edits go through `Markup`. `PaperStroke` hashes by `id` only, while equality compares every field.
+Elements and strokes are snapshots. Their fields are `let`, and all edits go through `Paper`. `Stroke` hashes by `id` only, while equality compares every field.
 
 ### 4.4 Tools
 
 ```swift
-public enum PaperTool: Codable, Hashable, Sendable {
-    case inking(InkingTool)
-    case eraser(EraserMode)
-    case lasso
-    case custom(id: String)
+extension Paper {
+    public enum Tool: Codable, Hashable, Sendable {
+        case ink(Paper.Ink, width: CGFloat)
+        case eraser(Paper.Eraser)
+        case lasso
+        case custom(id: String)
 
-    public static func pen(_ color: PaperColor, width: CGFloat = 3) -> PaperTool
-    public static func pencil(_ color: PaperColor, width: CGFloat = 2) -> PaperTool
-    public static func marker(_ color: PaperColor, width: CGFloat = 12) -> PaperTool
-    public static func monoline(_ color: PaperColor, width: CGFloat = 3) -> PaperTool
-    public static func fountainPen(_ color: PaperColor, width: CGFloat = 4) -> PaperTool
-    public static func watercolor(_ color: PaperColor, width: CGFloat = 20) -> PaperTool
-    public static func crayon(_ color: PaperColor, width: CGFloat = 12) -> PaperTool
-    public static let eraser: PaperTool              // .eraser(.vector)
-}
+        public static func pen(_ color: Paper.Color, width: CGFloat = 3) -> Tool
+        public static func pencil(_ color: Paper.Color, width: CGFloat = 2) -> Tool
+        public static func marker(_ color: Paper.Color, width: CGFloat = 12) -> Tool
+        public static func monoline(_ color: Paper.Color, width: CGFloat = 3) -> Tool
+        public static func fountainPen(_ color: Paper.Color, width: CGFloat = 4) -> Tool
+        public static func watercolor(_ color: Paper.Color, width: CGFloat = 20) -> Tool
+        public static func crayon(_ color: Paper.Color, width: CGFloat = 12) -> Tool
+        public static func reed(_ color: Paper.Color, width: CGFloat = 6) -> Tool
+        public static let eraser: Tool                            // .eraser(.vector)
+    }
 
-public struct InkingTool: Codable, Hashable, Sendable { public var ink: PaperInk; public var width: CGFloat }
-public struct PaperInk: Codable, Hashable, Sendable { public var kind: InkKind; public var color: PaperColor }
-public enum InkKind: String, Codable, Hashable, Sendable, CaseIterable {
-    case pen, pencil, marker, monoline, fountainPen, watercolor, crayon
-}
-public enum EraserMode: Codable, Hashable, Sendable { case vector; case bitmap(width: CGFloat?) }
+    public struct Ink: Codable, Hashable, Sendable {
+        public enum Kind: String, Codable, Hashable, Sendable, CaseIterable {
+            case pen, pencil, marker, monoline, fountainPen, watercolor, crayon, reed
+        }
+        public var kind: Kind
+        public var color: Paper.Color
+    }
 
-public enum PaperToolPickerItem: Hashable, Sendable {
-    case ink(InkKind)
-    case eraser(EraserMode)
-    case lasso
-    case ruler
-    case custom(id: String, name: String, systemImage: String)
-    public static let standard: [PaperToolPickerItem]
-}
-```
-
-Decoding an unknown `InkKind` from a newer file falls back to `.pen` rather than failing.
-
-### 4.5 Shapes (for inserting)
-
-```swift
-public enum PaperShape: Codable, Hashable, Sendable {
-    case rectangle, roundedRectangle, ellipse, triangle, star, speechBubble   // (verify) ShapeConfiguration cases
-}
-
-public struct PaperShapeStyle: Codable, Hashable, Sendable {
-    public init(stroke: PaperColor? = .black, fill: PaperColor? = nil, lineWidth: CGFloat = 2)
-    public var stroke: PaperColor?
-    public var fill: PaperColor?
-    public var lineWidth: CGFloat
-    public static let outline: PaperShapeStyle
-    public static func filled(_ color: PaperColor) -> PaperShapeStyle
+    public enum Eraser: Codable, Hashable, Sendable {
+        case vector
+        case bitmap(width: CGFloat?)
+    }
 }
 ```
 
-### 4.6 Size, layout, and geometry
+Decoding an unknown `Ink.Kind` from a newer file falls back to `.pen` rather than failing.
+
+### 4.5 Shapes
 
 ```swift
-public struct PaperSize: Codable, Hashable, Sendable {
-    public var size: CGSize                                      // points, 72 per inch
-    public init(_ size: CGSize)
-    public init(width: Measurement<UnitLength>, height: Measurement<UnitLength>)
-    public init(_ page: PDFPage)                                 // media box
-    public static let letter, legal, a4, a5, square: PaperSize
-    public static func inches(_ width: Double, _ height: Double) -> PaperSize
-    public static func millimeters(_ width: Double, _ height: Double) -> PaperSize
-    public var landscape: PaperSize { get }
+extension Paper {
+    public enum Shape: Codable, Hashable, Sendable {
+        case rectangle
+        case roundedRectangle(cornerRadius: CGFloat)
+        case ellipse
+        case regularPolygon(sides: Int)                          // 3 for a triangle
+        case star
+        case chatBubble
+        case arrow
+    }
+
+    public struct ShapeStyle: Codable, Hashable, Sendable {
+        public init(stroke: Paper.Color? = .black, fill: Paper.Color? = nil, lineWidth: CGFloat = 2, opacity: Double = 1)
+        public var stroke: Paper.Color?
+        public var fill: Paper.Color?
+        public var lineWidth: CGFloat
+        public var opacity: Double
+        public static let outline: ShapeStyle
+        public static func filled(_ color: Paper.Color) -> ShapeStyle
+    }
 }
+```
 
-public enum PaperRotation: Hashable, Sendable, CaseIterable { case clockwise, counterclockwise, halfTurn }
+`ShapeStyle` always sets fill, stroke, and width explicitly. PaperKit's own default is a black fill, no stroke, and width 0, which is rarely what an app wants.
 
+### 4.6 Text and features
+
+```swift
+extension Paper {
+    public enum TextSource: Hashable, Sendable {
+        case handwriting          // editable ink
+        case typed                // editable text boxes
+        case locked               // any locked element
+        case background           // PDF text layer or OCR of the background
+
+        public struct Set: OptionSet, Hashable, Sendable {
+            public static let handwriting, typed, locked, background: Set
+            public static let editable: Set                      // [.handwriting, .typed]
+            public static let all: Set
+        }
+    }
+
+    public struct TextMatch: Hashable, Sendable {
+        public let text: String
+        public let bounds: CGRect                                // page coordinates
+        public let source: TextSource
+        public let elementIDs: [Paper.Element.ID]                // empty for background matches
+    }
+
+    public struct Features: Hashable, Sendable {
+        public enum Feature: Hashable, Sendable, CaseIterable {
+            case drawing, text, images, stickers, shapeFills, shapeStrokes, shapeOpacity, links, loupes
+        }
+        public static let latest: Features
+        public func removing(_ feature: Feature) -> Features
+        public func inserting(_ feature: Feature) -> Features
+        public var inks: Swift.Set<Paper.Ink.Kind>
+        public var maximumHDRExposure: CGFloat                   // FeatureSet.colorMaximumLinearExposure, default 1.0
+    }
+}
+```
+
+### 4.7 Editor setting types (top level)
+
+```swift
 public enum PaperContentMode: Hashable, Sendable { case fit, fill, fitWidth, fitHeight }
 
 public struct PaperGeometry: Equatable, Sendable {
-    public var zoomScale: CGFloat          // 1 == the content mode's resting scale
-    public var visibleRect: CGRect         // page coordinates
+    public var zoomScale: CGFloat           // 1 == the content mode's resting scale
+    public var visibleRect: CGRect          // page coordinates
     public var contentSize: CGSize
 }
 
 public struct PaperScrollPosition: Hashable, Sendable {
     public init()
-    public var visibleRect: CGRect? { get }                      // last reported by the editor
+    public var visibleRect: CGRect? { get }
     public mutating func scrollTo(rect: CGRect, anchor: UnitPoint? = nil, zoom: Bool = true)
-    public mutating func scrollTo(match: PaperTextMatch)
-    public mutating func scrollTo(selection: PaperSelection)
-    public mutating func zoomToFit()                             // back to the resting state
-}
-```
-
-### 4.7 Text
-
-```swift
-public enum PaperTextSource: Hashable, Sendable {
-    case handwriting      // ink in markup
-    case typed            // text boxes in markup
-    case locked           // anything in the locked layer
-    case background       // PDF text layer or OCR of the background
-
-    public struct Set: OptionSet, Hashable, Sendable {
-        public static let handwriting, typed, locked, background: Set
-        public static let markup: Set        // [.handwriting, .typed]
-        public static let all: Set
-    }
-}
-
-public struct PaperTextMatch: Hashable, Sendable {
-    public let text: String
-    public let bounds: CGRect             // page coordinates
-    public let source: PaperTextSource
-}
-```
-
-### 4.8 Configuration types
-
-```swift
-public struct PaperColor: Codable, Hashable, Sendable {
-    public var red, green, blue, opacity: Float          // linear; may exceed 1.0 for HDR
-    public static let black, white, red, blue, green, yellow: PaperColor
-}
-// PaperUI: init(_ resolved: Color.Resolved), init(_ color: Color, in environment: EnvironmentValues), var color: Color
-
-public struct PaperFeatures: Hashable, Sendable {
-    public static let latest: PaperFeatures
-    public func removing(_ feature: Feature) -> PaperFeatures
-    public func inserting(_ feature: Feature) -> PaperFeatures
-    public var maximumHDRExposure: Double                 // FeatureSet.colorMaximumLinearExposure
-    public enum Feature: Hashable, Sendable { }           // (verify) mirrors FeatureSet's features
+    public mutating func scrollTo(match: Paper.TextMatch)
+    public mutating func scrollTo(selection: Paper.Selection)
+    public mutating func zoomToFit()
 }
 
 public enum PaperTouchMode: Hashable, Sendable {
-    case automatic        // follow the system "Only Draw with Apple Pencil" setting
-    case draw
-    case navigate         // scroll and select; only Pencil draws
-}                         // (verify) maps to PaperMarkupViewController.TouchMode
+    case automatic     // finger: follow the system "Only Draw with Apple Pencil" setting
+    case draw          // TouchMode.drawing
+    case select        // TouchMode.selection; only Pencil draws
+}                      // direct touch settings do not exist on macOS and are ignored there
 
-public struct PaperAdornment: Hashable, Sendable { }      // (verify) shape follows MarkupAdornment
+public enum PaperToolPickerItem: Hashable, Sendable {
+    case ink(Paper.Ink.Kind)
+    case eraser(Paper.Eraser)
+    case lasso
+    case ruler
+    case custom(id: String, name: String, systemImage: String)
+    public static let standard: [PaperToolPickerItem]
+}
+
+public struct PaperAdornment: Identifiable, Hashable, Sendable {
+    public enum Image: Hashable, Sendable { case `default`, systemImage(String), image(CGImage) }
+    public enum DragRegion: Hashable, Sendable { case fixed, canvas }
+    public let id: UUID
+    public var location: CGPoint             // page coordinates (MarkupAdornment anchor .canvas(location:))
+    public var image: Image
+    public var dragRegion: DragRegion
+    public var scalesWithZoom: Bool
+    public init(id: UUID = UUID(), location: CGPoint, image: Image = .default, dragRegion: DragRegion = .fixed, scalesWithZoom: Bool = false)
+}
 ```
 
 ---
@@ -487,40 +501,33 @@ public struct PaperAdornment: Hashable, Sendable { }      // (verify) shape foll
 
 ### 5.1 Content modes
 
-The page has a fixed size. The view is whatever SwiftUI offers. The content mode picks the resting scale:
-
 | Mode | Resting scale | Overflow |
 |---|---|---|
-| `.fit` | min(viewW / pageW, viewH / pageH) | None; letterboxed |
-| `.fill` | max(viewW / pageW, viewH / pageH) | Whichever axis the page is relatively longer in |
+| `.fit` | min(viewW / pageW, viewH / pageH) | None, letterboxed |
+| `.fill` | max(viewW / pageW, viewH / pageH) | The axis where the page is relatively longer |
 | `.fitWidth` | viewW / pageW | Vertical |
 | `.fitHeight` | viewH / pageH | Horizontal |
 
-- The anchor (`UnitPoint`) sets the initial scroll position in overflowing modes, and where letterbox space goes in `.fit`.
-- On rotation or resize, the resting scale is recomputed and the anchor re-applied, unless the user has scrolled or zoomed. In that case the same page point stays in view and relative zoom is kept.
+- The anchor sets the initial scroll position in overflowing modes, and where the letterbox space goes in `.fit`.
+- On rotation or resize, the resting scale is recomputed and the anchor re-applied, unless the user has scrolled or zoomed. In that case the same page point stays in view and the relative zoom is kept.
 - `zoomScale` and `paperZoomRange` are relative to the resting scale.
 
-### 5.2 Layers
+### 5.2 Locking
 
-| Operation | Result | Implementation |
-|---|---|---|
-| `flatten()` | `locked = locked + markup`, `markup = empty` | `locked.append(markup)`, then a new empty `Markup` of the same size |
-| `unlock()` | `markup = locked + markup`, `locked = empty` | Start from `locked`, append `markup` so current ink stays on top |
-| `archive()` | `background = .pdfPage(searchable PDF of all layers)`, both markups empty | See 5.3 |
-
-- Flattening is lossless and repeatable. Strokes keep vector form and IDs, and stay searchable as `.locked`.
-- Paper color: after `flatten()` or `unlock()`, the top layer's color wins if set.
-- All three layers share one size. `size`, `rotate`, and `resize` apply to every layer.
+- A locked element has `allowedInteractions = .readOnly`, the empty set, so it can't be selected, moved, resized, restyled, or deleted. The setting survives `dataRepresentation()`.
+- `lockAll()` locks every element. Use it to "submit" or "sign off" a page. New drawing then goes on top as editable elements.
+- `unlockAll()` restores `.all` interactions. Locking is lossless: strokes keep their vector form and IDs.
+- **(UI check)** Do the eraser and lasso respect read-only on ink strokes? Fallback: the coordinator restores any locked stroke the eraser changed, and filters locked IDs out of lasso selections.
 
 ### 5.3 Archive and PDF output
 
 `pdfData()`, `archive()`, `archived()`, and the PDF `Transferable` representation all produce the same PDF:
 
-1. Recognize text in `markup` and `locked` with positions (Section 5.6).
-2. Render background, then `locked`, then `markup` into a PDF context sized to the paper.
+1. Recognize text in every element, with positions (Section 5.6).
+2. Render the background, then all elements bottom to top, into a PDF context sized to the paper.
 3. Write the recognized text as an invisible text layer at the matching positions.
 
-`archive()` stores that PDF as the background and empties both markups. The page looks identical and stays searchable through PDFKit as `.background`, but stroke IDs and editing are gone. An image background is embedded in the PDF.
+`archive()` stores that PDF as the background and removes all elements. The page looks identical and stays searchable through PDFKit as `.background`, but element IDs and editing are gone. **(UI check)** Is PaperKit's PDF output vector? Fallback: render ink at 300 dpi into the PDF.
 
 ### 5.4 Saving
 
@@ -529,41 +536,42 @@ let data  = try await paper.dataRepresentation()
 let paper = try Paper(dataRepresentation: data)
 ```
 
-- **Format:** a versioned binary property list holding a format version, the two `PaperMarkup` blobs exactly as Apple produced them, and the background bytes.
+- **Format:** a versioned binary property list holding a format version, the `PaperMarkup` blob exactly as Apple produced it, and the background bytes.
 - **Async save, sync load,** mirroring `PaperMarkup`.
-- **`Codable`** writes the most recent background-refreshed snapshot, which can trail the newest stroke briefly. Use `dataRepresentation()` when freshness matters.
+- **`Codable`** writes the latest background-refreshed snapshot, which can trail the newest stroke briefly. Use `dataRepresentation()` when freshness matters.
 - **SwiftData:** store as `Data` with `@Attribute(.externalStorage)`.
 
 | Format | Use | Editable afterward |
 |---|---|---|
 | `dataRepresentation()` | Saving work | Yes |
 | `pdfData()` | Sending, printing, viewing anywhere | No |
-| `archived()` | A sealed `Paper` that can still be shown with `PaperView` | No |
+| `archived()` | A sealed `Paper` that `PaperView` can still show | No |
 
 ### 5.5 Rendering
 
 - `image(scale:)`: `scale` is relative to the paper size in points (`1.0` on letter gives 612 × 792 px).
 - `image(fitting:)`: the largest image with the page's aspect ratio that fits the box.
-- `Paper` rendering includes all layers. `Markup` rendering draws only the markup, onto the paper color.
-- Built on `PaperMarkup.draw(in:frame:options:) async`.
+- Rendering includes the stored background. Built on `PaperMarkup.draw(in:frame:options:) async`.
 
 ### 5.6 Text recognition
 
 | Source | Provider |
 |---|---|
-| `.handwriting` | `PKStrokeRecognizer` (iOS 27, on device, 29 languages), fed by stroke ID |
-| `.typed` | Text box contents from `subelements` **(verify)** |
-| `.locked` | Same two providers applied to `locked` |
-| `.background` | PDFKit text layer for text-based PDFs; Vision `RecognizeTextRequest` for scanned pages and images |
+| `.handwriting` | `PKStrokeRecognizer` (an actor, on device, 29 languages), fed a `PKDrawing` built from editable strokes. Search returns stroke IDs and bounds |
+| `.typed` | `attributedText` of editable text-box shapes |
+| `.locked` | Both of the above, applied to locked elements |
+| `.background` | PDFKit text for text-based PDFs, or Vision `RecognizeTextRequest` for scanned pages and images |
 
 - Background text is cached per `Paper`, keyed on the background bytes.
-- Handwriting recognition is incremental: after each stroke, only changed stroke IDs are re-recognized.
-- Higher-level AI (summaries, questions) is the app's job, for example by passing `recognizedText()` to Foundation Models.
+- Handwriting recognition is incremental, re-recognizing only changed stroke IDs.
+- `indexableText()` wraps PaperKit's async `indexableContent`, and is cheaper than full recognition.
+- Higher-level AI, such as summaries, is the app's job, for example by passing `recognizedText()` to Foundation Models.
 
-### 5.7 Rotation and resizing
+### 5.7 Size, rotation, and resizing
 
-- `rotate(_:)`: `transformContent` with a 90° multiple plus a translation back into positive coordinates, then width and height swap. Lossless. PDF backgrounds get their page rotation attribute updated, and image backgrounds are rotated by whole pixels and re-encoded as PNG.
-- `resize(to:scalingContent:)`: `false` extends or crops from the bottom-right corner, and `true` scales content with `transformContent`.
+- Setting `size` writes `PaperMarkup.bounds`. Content and stroke IDs are kept, and the page extends or crops from the bottom-right.
+- `rotate(_:)`: `transformContent` with a 90° multiple plus a translation back into positive coordinates, then the width and height swap. Lossless. A PDF background gets its page rotation attribute updated, and an image background is rotated by whole pixels and re-encoded as PNG.
+- `resize(to:scalingContent:)`: `false` behaves like setting `size`, and `true` also scales content with `transformContent`.
 
 ---
 
@@ -573,124 +581,119 @@ let paper = try Paper(dataRepresentation: data)
 
 ```
 Sources/
-├─ PaperModel/   Foundation + CoreGraphics only: PaperColor, tools, PaperSize, PaperRotation,
-│                PaperContentMode, PaperGeometry, PaperSelection, PaperTextSource, PaperShape(+Style)
-├─ PaperCore/    PaperKit + PencilKit + PDFKit + Vision: Markup, Paper, PaperBackground,
-│                PaperElement, PaperStroke, conversions, rendering, recognition, file format
-├─ PaperUI/      SwiftUI: PaperEditor, PaperView, PDFPageView, modifiers, coordinator,
-│                @_exported import PaperModel, PaperCore
+├─ PaperCore/    PaperKit + PencilKit + PDFKit + Vision. Paper and every nested type,
+│                conversions, rendering, recognition, file format
+├─ PaperUI/      SwiftUI. PaperEditor, PaperView, PDFPageView, modifiers, editor setting types,
+│                coordinator. @_exported import PaperCore
 └─ PaperTesting/ Paper.sample, Paper.samplePDF, fixtures
-Tests/           PaperModelTests, PaperCoreTests, PaperUITests  (Swift Testing)
+Tests/           PaperCoreTests, PaperUITests (Swift Testing)
 Demo/            iPad app exercising every public API
 ```
 
-### 6.2 `Markup` internals
+`swift-tools-version: 6.4` (needed for `.v27` platforms). Nested types must live in the module that defines `Paper`, so all value types are in `PaperCore`. Inside `extension Paper` in PaperUI, write `SwiftUI.Color` and `SwiftUI.Shape`, because the bare names resolve to `Paper.Color` and `Paper.Shape`.
 
-- Stores a live `PaperMarkup` (the single source of truth), a `token: UUID` regenerated on every mutation, a serialized snapshot for `Codable`, and a projection cache.
-- `paperSize` reads and writes `PaperMarkup.bounds`. If bounds are read-only **(verify)**, the setter builds a new `PaperMarkup(bounds:)` and appends the old content.
-- `==` returns true at once if tokens match, and otherwise falls back to `PaperMarkup`'s own `Equatable`. `hash(into:)` uses `paperSize` only, which is consistent with `==`.
-- The projection cache (`elements`, `strokes`) is a `final class` guarded by a `Mutex`, replaced on mutation (copy-on-write), so the struct stays `Sendable`.
+### 6.2 `Paper` storage
+
+- A live `PaperMarkup` (the single source of truth for content, size, and paper color), the optional background bytes, a `token: UUID` regenerated on every mutation, a serialized snapshot for `Codable`, and a projection cache.
+- `==` returns true at once if tokens match. Otherwise it compares `PaperMarkup` (Apple's `Equatable`) and then the background bytes. `hash(into:)` uses `size` only.
+- The projection cache (`elements`, `strokes`) is a `final class` guarded by a `Mutex` and replaced on mutation, so `Paper` stays `Sendable`.
+- Editing goes through `subelements: MarkupOrderedSet` (mutable: `removeElement(for:)`, `removeStroke(for:)`, `removeAll(where:)`). Locking sets each element's `allowedInteractions`.
 
 ### 6.3 Coordinator (private)
 
-- Observes `PaperMarkupViewController` with Swift Observation (it is `Observable`), and uses the delegate only where Observation can't help.
-- **Loop prevention:** it records the last token pushed to the controller and the last received from it. `updateUIViewController` writes markup into the controller only when the binding's token matches neither.
-- **Coalescing:** the binding updates once per stroke end, not per touch sample. The `Codable` snapshot refreshes in the background afterward.
-- Owns one `PKToolPicker` per window, shared by editors in that window.
-- Applies borrowed environment values (Section 3.4) and content-mode math (Section 5.1) on every layout change.
-- Feeds `PKStrokeRecognizer` with changed stroke IDs.
+- Observes `PaperMarkupViewController` with Swift Observation, and uses the delegate where Observation can't help (adornment taps and updates).
+- **Loop prevention:** it tracks the last token pushed to and received from the controller. It writes into the controller only when the binding's token matches neither.
+- **Coalescing:** the binding updates once per stroke end. The `Codable` snapshot refreshes in the background afterward.
+- Owns one `PKToolPicker` per window.
+- Applies borrowed environment (3.4), content-mode math (5.1), and locked-element guards (5.2) on each update.
+- Feeds `PKStrokeRecognizer` with changed strokes.
 
 ### 6.4 Our API to PaperKit
 
 | Ours | PaperKit / PencilKit |
 |---|---|
-| `Markup` | `PaperMarkup` |
-| `Markup.paperSize`, `.paperColor`, `.contentBounds`, `.indexableContent` | `bounds`, `backgroundColor`, `contentsRenderFrame`, `indexableContent` |
-| `insertShape` / `insertLine` / `insertText` / `insertImage` | `insertNewShape` / `insertNewLine` / `insertNewTextbox` / `insertNewImage` |
-| `append(_:)`, `rotate`, `resize(scalingContent: true)` | `append(contentsOf: PaperMarkup)`, `transformContent(_:)` |
-| `elements`, `remove(_:)` | `subelements: MarkupOrderedSet` |
-| `erase(along:width:)`, `PaperStroke.path` | iOS 27 `PKStrokePath` erase and Bézier conversion |
-| `dataRepresentation()`, `init(dataRepresentation:)` | same names on `PaperMarkup` |
+| `Paper` | `PaperMarkup` |
+| `size`, `color`, `contentBounds`, `indexableText()` | `bounds`, `backgroundColor`, `contentsRenderFrame`, `indexableContent` |
+| `elements`, `strokes`, `remove(_:)` | `subelements: MarkupOrderedSet`, `subelements.strokes: [PKStroke]` |
+| `lock`, `unlock`, `Element.isLocked` | element `allowedInteractions` (`.readOnly`, `.all`) |
+| `insertShape`, `insertLine`, `insertText`, `insertImage` | `insertNewShape`, `insertNewLine`, `insertNewTextbox`, `insertNewImage` |
+| `Paper.Shape`, `Paper.ShapeStyle` | `ShapeConfiguration` |
+| `append(_:)`, `rotate`, `resize` | `append(contentsOf: PaperMarkup)`, `transformContent(_:)` |
+| `dataRepresentation()`, `init(dataRepresentation:)` | the same on `PaperMarkup` |
 | `image`, `pdfData` | `draw(in:frame:options:)` |
-| `PaperEditor` | `PaperMarkupViewController` (+ `contentView`) |
-| `.paperTool`, `.paperToolPicker`, `.paperToolPickerAccessory` | `drawingTool`, `PKToolPicker` (custom items, accessory), `MarkupToolbarViewController` on macOS |
+| `Paper.Stroke`, `Stroke.ID`, `Stroke.path` | `PKStroke`, `PKStroke.id`, `PKStrokePath` Bézier conversion |
+| `Paper.Features` | `FeatureSet` (features, `inks`, `colorMaximumLinearExposure`) |
+| `PaperEditor` | `PaperMarkupViewController` + `contentView` |
+| `.paperTool`, `.paperToolPicker`, `.paperToolPickerAccessory` | `drawingTool`, `PKToolPicker`, `MarkupToolbarViewController` (macOS) |
 | `.paperSelection`, `onPaperSelectionChange` | `selection`, `selectedMarkup` |
 | `.paperScrollPosition`, `.paperContentMode`, `.paperZoomRange`, `onPaperGeometryChange` | `setContentVisibleFrame(_:animated:)`, `contentVisibleFrame`, `zoomRange`, `scrollConfiguration` |
 | `.paperInput` | `directTouchMode`, `directTouchAutomaticallyDraws`, `indirectPointerTouchMode` |
 | `.paperRulerActive`, `.disabled` | `isRulerActive`, `isEditable` |
-| `.paperFeatures` | `supportedFeatureSet: FeatureSet` |
+| `.paperFeatures` | `supportedFeatureSet` |
 | `.paperInsertionMenu` | `MarkupEditViewController` |
-| `.paperAdornments` | `adornments`, `adornmentFrame(for:)` |
+| `.paperAdornments` | `adornments`, `MarkupAdornment`, delegate callbacks |
 | `\.undoManager` | `undoManager` |
-| `recognizedText`, `search` | `PKStrokeRecognizer`, `indexableContent`, PDFKit, Vision |
+| `recognizedText`, `search` | `PKStrokeRecognizer`, PDFKit, Vision |
 
 ---
 
-## 7. Coverage: is all of PaperKit wrapped?
+## 7. Coverage
 
-**Yes, for everything Apple documents, apart from the intentional backward-compatibility exclusions.** Every documented `PaperMarkup` member and every documented `PaperMarkupViewController` capability in Section 6.4 has a SwiftUI path. The remaining gaps come from places where Apple's documentation is silent or thin, not from design choices:
+**Every PaperKit capability in the iOS 27 SDK has a SwiftUI path, apart from the intentional exclusions.** All the earlier unknowns were settled against the SDK headers: strokes are readable, IDs survive saving and appending, content can be removed, the selection is settable, the bounds are settable, and adornments, shapes, features, and touch modes are fully specified.
 
-| Area | Status | Why |
-|---|---|---|
-| Adornments | Placeholder API | `MarkupAdornment` is barely documented. `PaperAdornment` takes its shape once the SDK header is read |
-| Element details | Shallow | `MarkupOrderedSet` element types aren't documented, so `PaperElement` exposes kind and frame only. Richer reading (text box contents, shape style) grows with what the SDK reveals |
-| Removing content | Provisional | `PaperMarkup` documents insert, append, and transform, but no remove. Depends on whether `subelements` is mutable |
-| Setting the selection | Provisional | `selection` is documented, but not whether it is settable. Otherwise read-only via `onPaperSelectionChange` |
-| Delegate events | Partial | The `Delegate` protocol's methods aren't listed. Only drawing-began is wrapped. Others are added as found |
-| `ScrollConfiguration` | Partial | Its members aren't documented beyond scroll indicators |
-| `FeatureSet` granularity | Partial | `PaperFeatures.Feature` mirrors whatever features the SDK enumerates |
-| `RenderingOptions` for `draw` | Internal only | Used internally for rendering; not exposed until a need appears |
-| iOS 27 PencilKit extras | Not wrapped | Substroke ranges, `renderGroupID`, recognizer language preferences. Niche; added on request |
+| Area | Status |
+|---|---|
+| Three behaviors that need a running app | `contentView` following zoom (2.1), eraser and lasso on locked strokes (5.2), vector PDF output (5.3). Each has a fallback |
+| Erasing along a path from code | Not offered. `PaperMarkup` has no erase API, and erasing a `PKDrawing` splits strokes into pieces with new IDs. Apps remove whole strokes with `remove(_:)` |
+| macOS differences | No direct-touch settings, `isRulerActive`, or `undoManager` override on macOS. Those modifiers do nothing there |
+| iOS 27 PencilKit extras | Substroke ranges, `renderGroupID`, and recognizer language preferences are not wrapped. Added on request |
+| `RenderingOptions` | Used internally only |
 
-**Excluded by choice:** `append(contentsOf: PKDrawing)` import, `removeContentUnsupported(by:)`, versioned feature sets, and OS versions before 27.
+**Excluded by choice:** `PKDrawing` import, `removeContentUnsupported(by:)`, versioned feature sets, and OS versions before 27.
 
-**Beyond PaperKit:** the package adds things PaperKit doesn't have: `Paper` layers, flatten, unlock, and archive, embedded backgrounds, searchable PDF output, background OCR, content modes, and value-type tools that are `Codable`.
+**Beyond PaperKit:** per-element locking with `lockAll()`, archive to a searchable PDF, embedded backgrounds, background OCR, content modes, and `Codable` tools.
 
 ---
 
 ## 8. Build plan
 
-**No separate spike phase.** Every **(verify)** item sits behind an API whose fallback is already designed, so none of them can force a redesign before building starts. Each is resolved as the first task of the phase that uses it, and anything else surfaces as a bug to fix.
+The SDK check and the package skeleton are done: 18 tests pass on macOS 27 and the iPad simulator. The work is on `phase1/sdk-findings`, waiting to be pushed.
 
 ### Phase 1: A working editor (MVP)
 
-Goal: draw on an iPad, save, and reload.
+- Rework the skeleton to v2.1: merge PaperModel into PaperCore, use a single `Paper` type, and adopt the nested names.
+- `Paper` storage (6.2), `size`, `color`, `dataRepresentation`, and the `Codable` snapshot.
+- `PaperEditor(paper:)` with `.paperTool`, `.paperToolPicker(isPresented:)`, `.paperFeatures`, `.paperContentMode`, `.paperZoomRange`, `.disabled`, and `\.undoManager`.
+- The coordinator's loop prevention and coalescing.
+- A demo app, plus the UI check for eraser and lasso on locked strokes.
 
-- Package skeleton and the three targets.
-- `PaperModel` types: tools, colors, sizes, content modes, geometry.
-- `Markup`: live `PaperMarkup`, token, `paperSize`, `paperColor`, `dataRepresentation`, `Codable` snapshot.
-- `PaperEditor(markup:)` with `.paperTool`, `.paperToolPicker(isPresented:)`, `.paperFeatures`, `.paperContentMode`, `.paperZoomRange`, `.disabled`, `\.undoManager`.
-- Coordinator loop prevention and coalescing.
-- First tests: stroke ID round-trip through `dataRepresentation`, `bounds` setter behavior, content modes through rotation.
+**Done when** the demo draws, rotates the device without moving strokes, saves, relaunches, and restores.
 
-**Done when** a demo app draws, rotates the device without moving strokes, saves, relaunches, and restores.
+### Phase 2: Backgrounds, locking, and output
 
-### Phase 2: Paper, backgrounds, and output
+- `Paper.Background`, the `on:` initializers, `PDFPageView`, and the `contentView` zoom check.
+- `lock`, `unlock`, `lockAll`, `unlockAll`, `rotate`, `resize`, and `append`.
+- `PaperView`, `image(scale:)`, `image(fitting:)`, `pdfData()` (text layer added in Phase 4), `Transferable`, and the `.swiftPaper` type. Includes the vector-PDF check.
 
-- `Paper` with three layers, `PaperBackground`, `PaperEditor(paper:)`, the `on:` initializers, `PDFPageView`.
-- `flatten()`, `unlock()`, `rotate`, `resize`, `append`.
-- `PaperView`, `image(scale:)`, `image(fitting:)`, `pdfData()` (without the text layer for now), `Transferable`, the `.swiftPaper` file format.
-- First tasks: does `contentView` follow zoom? Does `append(contentsOf:)` keep IDs? Is PDF output vector?
-
-**Done when** a PDF worksheet can be filled in, flattened, rotated, thumbnailed, and shared as a PDF.
+**Done when** a PDF worksheet can be filled in, locked, rotated, thumbnailed, and shared as a PDF.
 
 ### Phase 3: Interaction
 
-- `.paperSelection` (or `onPaperSelectionChange` alone if read-only), `.paperScrollPosition`, `onPaperGeometryChange`, `onPaperDrawingBegan`.
-- Insert methods, `remove`, `erase(along:width:)`, `PaperShape` and `PaperShapeStyle`.
-- `.paperInput`, `.paperRulerActive`, tool picker items, custom tools, accessory, `.paperInsertionMenu`.
-- Borrowed environment (Section 3.4), `elements`, `strokes`, `PaperStroke.path`.
+- `.paperSelection`, `onPaperSelectionChange`, `.paperScrollPosition`, `onPaperGeometryChange`, and `onPaperDrawingBegan`.
+- Insert methods, `remove`, `Paper.Shape`, and `Paper.ShapeStyle`.
+- `.paperInput`, `.paperRulerActive`, tool picker items, custom tools, the accessory, `.paperInsertionMenu`, and `.paperAdornments`.
+- Borrowed environment, `elements`, `strokes`, and `Stroke.path`.
 
 **Done when** every modifier in Section 3 works in the demo.
 
 ### Phase 4: Text and archive
 
-- `recognizedText(_:)` and `search(_:in:)` across all four sources, `PaperTextMatch`, `scrollTo(match:)`.
-- Searchable text layer in `pdfData()`, then `archive()` and `archived()`.
+- `recognizedText`, `search`, `indexableText`, and `scrollTo(match:)`.
+- The searchable text layer in `pdfData()`, then `archive()` and `archived()`.
 - Default accessibility labels.
 
 **Done when** a scanned PDF with handwriting can be searched, a match revealed, and the page archived and still searched.
 
 ### Later, when needed
 
-macOS and visionOS polish, a pure-SwiftUI tool palette, adornments, arbitrary SwiftUI backgrounds in the editor, view-only rotation, and the iOS 27 PencilKit extras from Section 7.
+macOS and visionOS polish, a pure-SwiftUI tool palette, arbitrary SwiftUI backgrounds in the editor, view-only rotation, and the PencilKit extras from Section 7.
