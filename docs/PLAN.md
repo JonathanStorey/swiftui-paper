@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.18, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.19, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -371,7 +371,7 @@ let pdf   = try await paper.pdfData()                                   // true 
 | Output | How it's made | Use it for |
 |---|---|---|
 | `CGImage` | Bitmap context | Thumbnails, lists, widgets. Convert with `Image(decorative:scale:)`, `UIImage(cgImage:)`, or encode PNG/JPEG/HEIC with ImageIO |
-| PDF `Data` | PDF context sized to the paper | Print and share at true paper size. A PDF background stays vector, and ink should too if PaperKit draws vector into a PDF context (Phase 0 check) |
+| PDF `Data` | PDF context sized to the paper, plus an invisible text layer from recognition | Save, send, and print at true paper size. Searchable and copyable in any PDF viewer. A PDF background stays vector, and ink should too if PaperKit draws vector into a PDF context (Phase 0 check) |
 
 `CGImage` is the core format, not `UIImage`, so the API works the same on iOS and macOS and stays `Sendable`.
 
@@ -791,13 +791,14 @@ public struct Paper: Codable, Hashable, Sendable, Transferable {
     public mutating func flatten()                 // top merges into locked; top becomes empty
     public mutating func unlock()                  // locked merges under top; locked becomes empty
     public mutating func archive() async throws    // one-way: all layers baked into a searchable PDF background
+    public func archived() async throws -> Paper   // non-mutating twin, like sort() / sorted()
 
     public var size: PaperSize { get set }         // keeps both markups the same size
     public mutating func rotate(_ turn: PaperRotation)   // turns all three layers together
 
     public func image(scale: Double) async throws -> CGImage
     public func image(fitting box: CGSize) async throws -> CGImage
-    public func pdfData() async throws -> Data
+    public func pdfData() async throws -> Data         // the searchable PDF that archive() produces
 }
 
 public enum PaperBackground: Codable, Hashable, Sendable {
@@ -828,13 +829,17 @@ paper.unlock()     // "reopen": everything locked becomes editable again, under 
 **`archive()`: the explicit one-way compaction.**
 
 ```swift
-var copy = paper
-try await copy.archive()     // async: rendering and recognition are async
-paper = copy
+try await paper.archive()                  // mutating: this sheet becomes archived
+let finished = try await paper.archived()  // non-mutating: an archived copy, original untouched
+let pdf      = try await paper.pdfData()   // just the PDF, for saving, sending, and printing
 ```
 
+The pair follows Swift's naming rule for mutating and non-mutating twins (`sort()` / `sorted()`), so `archived()` returns the same type, a `Paper`. The PDF itself comes from `pdfData()`, which now produces exactly the searchable PDF that archiving builds. One PDF format everywhere: the same bytes are stored by `archive()`, returned by `pdfData()`, shared by `ShareLink`, and printed.
+
+Steps:
+
 1. Recognize the text in `markup` and `locked` (handwriting and text boxes), with positions.
-2. Render all three layers into a single-page PDF with `pdfData()`. Ink stays vector, so it is sharp at any zoom, not an image.
+2. Render all three layers into a single-page PDF. Ink stays vector, so it is sharp at any zoom, not an image.
 3. Write the recognized text into that PDF as an invisible text layer at the matching positions, the same technique scanners use to make scanned PDFs searchable.
 4. The result becomes `background` as `.pdfPage`, and `markup` and `locked` are emptied.
 
@@ -850,7 +855,7 @@ Key decisions:
 - **PDF pages are extracted.** `Paper(pdfPage:)` copies the one page into a single-page PDF. Shared fonts and resources are duplicated per page, an acceptable cost for a self-contained sheet.
 - **No `.color` background.** Paper color is stored in Apple's blob (`markup.paperColor`). `flatten()` and `unlock()` keep the top layer's color if set, otherwise the locked layer's.
 - **Rotation turns all three layers.** Markups rotate as in Section 5.5. A PDF page gets its rotation attribute updated, and an image is rotated by whole pixels and re-encoded as PNG. All lossless.
-- **Rendering stays sharp.** The editor shows `locked` through the tiled PDF view, rendered once to single-page PDF with `pdfData()` and refreshed only when `locked` changes. This relies on PaperKit drawing vector output into a PDF context (a Phase 0 check). The fallback is a high-resolution bitmap re-rendered past a zoom threshold.
+- **Rendering stays sharp.** The editor shows `locked` through the tiled PDF view, rendered once to a single-page PDF (without the text layer, since it is only for display) and refreshed only when `locked` changes. This relies on PaperKit drawing vector output into a PDF context (a Phase 0 check). The fallback is a high-resolution bitmap re-rendered past a zoom threshold.
 - **Text recognition sees every layer.** `PaperTextSource` gains a `.locked` case, so `recognizedText(.locked)` reads only flattened work, and `.all` reads all three layers.
 - **Equality.** `==` checks `markup`, then `locked` (cheap token checks), and compares background data last.
 
