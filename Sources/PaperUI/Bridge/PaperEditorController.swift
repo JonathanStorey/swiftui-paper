@@ -19,26 +19,26 @@ typealias PlatformView = UIView
 @MainActor
 final class PaperEditorController: PlatformViewController, PaperMarkupViewController.Delegate {
     private(set) var markupController: PaperMarkupViewController
-    private var paper: Binding<Paper>
-    private var environment: EnvironmentValues
+    var paper: Binding<Paper>
+    var environment: EnvironmentValues
     private var background: EditorBackground
-    private var features: Paper.Features
+    var features: Paper.Features
 
     // Loop prevention: the controller is written only when the binding's token matches neither.
-    private var lastPushedToken: UUID?
+    var lastPushedToken: UUID?
     private var lastReceivedToken: UUID?
-    private var isPushing = false
+    var isPushing = false
     private var flushScheduled = false
 
     // The tool last pushed from the binding, and how PencilKit reported it back.
     private var pushedTool: (binding: Paper.Tool, readBack: Paper.Tool?)?
 
     // Content mode
-    private var placement: PaperContentPlacement
+    var placement: PaperContentPlacement
     private var zoomRange: ClosedRange<CGFloat>
-    private var lastLayoutSize: CGSize = .zero
+    var lastLayoutSize: CGSize = .zero
     private var lastAppliedVisibleRect: CGRect?
-    private var userHasAdjustedView = false
+    var userHasAdjustedView = false
     private var isApplyingPlacement = false
 
     // Background (contentView)
@@ -47,6 +47,19 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
     private var backgroundHost: NSHostingView<AnyView>?
     #else
     private var backgroundHost: UIHostingController<AnyView>?
+    #endif
+
+    // Interaction (PaperEditorController+Interaction.swift)
+    var lastSelection = Paper.Selection()
+    var handledScrollRequest: UUID?
+    var geometryReportScheduled = false
+    var pushedAdornments: [PaperAdornment]?
+    var defaultPointerMode: PaperMarkupViewController.TouchMode?
+    #if !os(macOS)
+    var insertionMenu: MarkupEditViewController?
+    var accessoryAction: (() -> Void)?
+    var accessoryAppearance: String?
+    var attachedToolPickerForAccessory: PKToolPicker? { attachedToolPicker }
     #endif
 
     #if os(macOS)
@@ -129,6 +142,7 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
             applyPlacement(previousViewSize: lastLayoutSize)
         }
         updateToolPicker()
+        updateInteraction()
     }
 
     private func pushPaperIfNeeded() {
@@ -296,15 +310,28 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
     }
 
     nonisolated func paperMarkupViewControllerDidChangeContentVisibleFrame(_ controller: PaperMarkupViewController) {
-        MainActor.assumeIsolated { visibleFrameDidChange() }
+        MainActor.assumeIsolated {
+            visibleFrameDidChange()
+            scheduleGeometryReport()
+        }
     }
 
     nonisolated func paperMarkupViewControllerDidChangeSelection(_ controller: PaperMarkupViewController) {
+        MainActor.assumeIsolated { selectionDidChange() }
+    }
+
+    nonisolated func paperMarkupViewControllerDidBeginDrawing(_ controller: PaperMarkupViewController) {
         MainActor.assumeIsolated {
-            debugLog("selection changed:", markupController.selection.count, "element(s)",
-                     "locked:", markupController.selection.filter(isLocked).count,
-                     "selectedMarkup:", markupController.selectedMarkup.subelements.count, "element(s)")
+            for handler in environment.paperEvents.drawingBegan { handler() }
         }
+    }
+
+    nonisolated func paperMarkupViewController(_ controller: PaperMarkupViewController, didTapAdornmentWithID id: UUID) {
+        MainActor.assumeIsolated { environment.paperAdornments?.onTap(id) }
+    }
+
+    nonisolated func paperMarkupViewController(_ controller: PaperMarkupViewController, didUpdateAdornmentWithID id: UUID, toAnchor anchor: MarkupAdornment.Anchor) {
+        MainActor.assumeIsolated { adornmentDidMove(id, anchor: anchor) }
     }
 
     /// Coalescing: however many change callbacks arrive in one turn of the run loop, the binding is written once.
@@ -328,7 +355,7 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
                  "locked:", markup.subelements.filter { $0.allowedInteractions == .readOnly }.count)
     }
 
-    private func isLocked(_ id: MarkupOrderedSet.ElementID) -> Bool {
+    func isLocked(_ id: MarkupOrderedSet.ElementID) -> Bool {
         markupController.markup?.subelements[id]?.allowedInteractions == .readOnly
     }
 
@@ -376,7 +403,7 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
 
     /// Puts the page at its resting placement, or, once the user has scrolled or zoomed, keeps
     /// the same page point in view at the same relative zoom.
-    private func applyPlacement(previousViewSize: CGSize) {
+    func applyPlacement(previousViewSize: CGSize) {
         let viewSize = lastLayoutSize
         guard viewSize.width > 0, viewSize.height > 0 else { return }
         let page = paper.wrappedValue.size.size
