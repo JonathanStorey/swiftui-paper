@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.14, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.15, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -421,7 +421,7 @@ The filter follows SwiftUI's `Edge` / `Edge.Set` pattern: a plain enum names one
 public enum PaperTextSource: Hashable, Sendable {
     case handwriting   // ink, via PKStrokeRecognizer
     case typed         // text boxes in the markup
-    case background    // PDF text layer or Vision OCR
+    case background    // PDF text layer, Vision OCR, or a locked base sheet's markup
 
     public struct Set: OptionSet, Hashable, Sendable {
         public static let handwriting, typed, background: Set
@@ -777,6 +777,9 @@ public struct Paper: Codable, Hashable, Sendable, Transferable {
     public init(markup: Markup, background: PaperBackground? = nil)
     public init(pdfPage: PDFPage)                       // size from the page's media box
     public init(image: CGImage, size: PaperSize)        // image stretched to the page
+    public init(on base: Paper)                         // locked layer: size copied from base
+
+    public mutating func flatten()                      // merge a .paper background into the editable markup
 
     public var size: PaperSize { get set }              // forwards to markup.paperSize
     public mutating func rotate(_ turn: PaperRotation)  // turns markup and background together
@@ -786,9 +789,10 @@ public struct Paper: Codable, Hashable, Sendable, Transferable {
     public func pdfData() async throws -> Data
 }
 
-public enum PaperBackground: Codable, Hashable, Sendable {
+public indirect enum PaperBackground: Codable, Hashable, Sendable {
     case image(Data)       // encoded PNG / JPEG / HEIC, stretched to the page
     case pdfPage(Data)     // a single-page PDF, extracted from the source document
+    case paper(Paper)      // another sheet, shown locked underneath
 }
 ```
 
@@ -800,7 +804,21 @@ Key decisions:
 - **One size.** `paper.size` forwards to `markup.paperSize`. The background has no size of its own: it is always drawn to fill the page.
 - **Rotation turns everything.** `paper.rotate(.clockwise)` rotates the markup (Section 5.5) and the background together, so the template stays aligned with the ink. Both stay lossless: a PDF page gets its page rotation attribute updated (no re-rendering), and an image is rotated by whole pixels and re-encoded as PNG.
 - **Equality.** `==` checks the markup first (cheap token check) and compares background data only when the markups are equal. Backgrounds rarely change, so this almost never costs anything.
-- **`PaperBackgroundView`** is the internal view `PaperEditor(paper:)` builds from a `PaperBackground`: the tiled PDF view for `.pdfPage`, and a hosted image for `.image`.
+- **`PaperBackgroundView`** is the internal view `PaperEditor(paper:)` builds from a `PaperBackground`: the tiled PDF view for `.pdfPage`, a hosted image for `.image`, and for `.paper`, see below.
+
+**Paper as a background: locked layers.** `.paper(Paper)` puts a whole sheet underneath the editable one, visible but untouchable, like tracing paper over a finished drawing. Examples: a teacher's marked-up worksheet with a student's answers on top, an annotated plan with a reviewer's notes as a separate layer, or a signature layer over a filled-in form.
+
+```swift
+let reviewed = Paper(on: original)     // original is locked underneath; new ink goes on top
+```
+
+- **Size comes from the base.** `Paper(on:)` copies the base sheet's size, as `Paper(pdfPage:)` does for a PDF page. Ink is never stretched, because a stretched drawing would distort strokes and text.
+- **It nests.** The base sheet can have its own background (a PDF page with a teacher's markup, say), so layers stack naturally. Rendering walks down the chain, drawing the deepest background first.
+- **Rotation turns every layer.** `rotate(_:)` recurses into a `.paper` background, so all layers stay aligned.
+- **Rendering stays sharp.** In the editor, the base sheet is rendered once to single-page PDF data with `pdfData()` and shown through the same tiled PDF view, so it zooms crisply. This relies on PaperKit drawing vector output into a PDF context (already a Phase 0 check). If it doesn't, the fallback is a high-resolution bitmap re-rendered when zoom passes a threshold.
+- **Text recognition includes it.** The base sheet's handwriting and typed text count as `.background` for `recognizedText(_:)` and `search(_:in:)`, and matches report it as such.
+- **`flatten()` merges the layers.** It appends the base sheet's markup into the editable markup using PaperKit's documented `append(contentsOf: PaperMarkup)`, then replaces the background with the base sheet's own background. The base content becomes editable, and the stroke IDs are kept.
+- **Separate layers, not separate history.** The locked layer is plain data, so the app decides whether to keep revisions as layered `Paper` values or flatten them.
 
 ---
 
