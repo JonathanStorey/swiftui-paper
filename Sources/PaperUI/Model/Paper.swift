@@ -8,7 +8,7 @@ import PDFKit
 /// `Paper` is a value. Bind it to a `PaperEditor` the way you bind a `String` to a `TextEditor`.
 public struct Paper: Sendable {
     /// The live PaperKit value: the single source of truth for content, size, and paper color.
-    private(set) var markup: PaperMarkup {
+    var markup: PaperMarkup {
         didSet { didMutate() }
     }
 
@@ -21,6 +21,9 @@ public struct Paper: Sendable {
 
     /// The serialized markup that `Codable` writes. Refreshed in the background after each mutation.
     private(set) var snapshot: Snapshot
+
+    /// `elements` and `strokes`, computed once per state.
+    private(set) var projections = Projections()
 
     // MARK: Creating
 
@@ -72,28 +75,6 @@ public struct Paper: Sendable {
     /// The rectangle, in page coordinates, that the content draws into.
     public var contentBounds: CGRect { markup.contentsRenderFrame }
 
-    // MARK: Locking
-
-    /// Locks every element, for example to submit or sign off a page. New drawing goes on top as editable elements.
-    public mutating func lockAll() {
-        setInteractions(.readOnly)
-    }
-
-    /// Restores full interaction on every element. Locking is lossless.
-    public mutating func unlockAll() {
-        setInteractions(.all)
-    }
-
-    private mutating func setInteractions(_ interactions: MarkupInteractions) {
-        var updated = MarkupOrderedSet()
-        updated.append(contentsOf: markup.subelements.map { element in
-            var element = element
-            element.allowedInteractions = interactions
-            return element
-        })
-        markup.subelements = updated
-    }
-
     // MARK: Saving
 
     /// A versioned file holding the PaperKit content exactly as Apple produced it, plus the background bytes.
@@ -118,9 +99,10 @@ public struct Paper: Sendable {
     private mutating func didMutate() {
         token = UUID()
         snapshot = Snapshot(markup: markup, token: token, previous: snapshot.latest)
+        projections = Projections()
     }
 
-    private static func pngData(_ image: CGImage) -> Data? {
+    static func pngData(_ image: CGImage) -> Data? {
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(destination, image, nil)
