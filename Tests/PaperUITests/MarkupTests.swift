@@ -2,8 +2,7 @@ import Foundation
 import PaperKit
 import PencilKit
 import Testing
-@testable import PaperCore
-import PaperTesting
+@testable import PaperUI
 
 struct MarkupTests {
     @Test func emptyRoundTripKeepsSize() async throws {

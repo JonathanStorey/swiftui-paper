@@ -573,16 +573,14 @@ let paper = try Paper(dataRepresentation: data)
 
 ```
 Sources/
-├─ PaperModel/   Foundation + CoreGraphics only: PaperColor, tools, PaperSize, PaperRotation,
-│                PaperContentMode, PaperGeometry, PaperSelection, PaperTextSource, PaperShape(+Style)
-├─ PaperCore/    PaperKit + PencilKit + PDFKit + Vision: Markup, Paper, PaperBackground,
-│                PaperElement, PaperStroke, conversions, rendering, recognition, file format
-├─ PaperUI/      SwiftUI: PaperEditor, PaperView, PDFPageView, modifiers, coordinator,
-│                @_exported import PaperModel, PaperCore
-└─ PaperTesting/ Paper.sample, Paper.samplePDF, fixtures
-Tests/           PaperModelTests, PaperCoreTests, PaperUITests  (Swift Testing)
+└─ PaperUI/      The whole library, one module: value types, PaperKit wrapping, rendering,
+                 recognition, file format, SwiftUI views, modifiers, coordinator
+Tests/
+└─ PaperUITests/ Swift Testing, with fixtures (Paper.sample, Paper.samplePDF)
 Demo/            iPad app exercising every public API
 ```
+
+One module, imported as `import PaperUI`. Splitting off a framework-free value-type module was considered and dropped: no planned use needs the types without PaperKit.
 
 ### 6.2 `Markup` internals
 
@@ -656,8 +654,8 @@ Demo/            iPad app exercising every public API
 
 Goal: draw on an iPad, save, and reload.
 
-- Package skeleton and the three targets.
-- `PaperModel` types: tools, colors, sizes, content modes, geometry.
+- Package skeleton: one library target and one test target.
+- Value types: tools, colors, sizes, content modes, geometry.
 - `Markup`: live `PaperMarkup`, token, `paperSize`, `paperColor`, `dataRepresentation`, `Codable` snapshot.
 - `PaperEditor(markup:)` with `.paperTool`, `.paperToolPicker(isPresented:)`, `.paperFeatures`, `.paperContentMode`, `.paperZoomRange`, `.disabled`, `\.undoManager`.
 - Coordinator loop prevention and coalescing.

@@ -10,7 +10,7 @@ Sources:
 - `iPhoneOS.sdk/.../PencilKit.framework/Modules/PencilKit.swiftmodule/arm64e-apple-ios.swiftinterface` (616.100) and the PencilKit ObjC headers
 - the macOS and visionOS interfaces of both frameworks, for platform differences
 
-Runtime answers come from `Tests/PaperCoreTests/MarkupTests.swift` (`PaperKitBehaviorTests`). They ran on macOS 27 and on an iPad Pro 11-inch (M5) iOS 27.0 simulator with identical results.
+Runtime answers come from `Tests/PaperUITests/MarkupTests.swift` (`PaperKitBehaviorTests`). They ran on macOS 27 and on an iPad Pro 11-inch (M5) iOS 27.0 simulator with identical results.
 
 ---
 
@@ -161,7 +161,7 @@ public protocol Markup : Sendable {
 }
 ```
 
-Conformers: `PKStroke` (via extension), `ShapeMarkup`, `ImageMarkup`, `LinkMarkup`, `LoupeMarkup`. **Name clash:** PaperKit's protocol is called `Markup`, and so is our struct. Inside PaperCore, refer to PaperKit's as `PaperKit.Markup`.
+Conformers: `PKStroke` (via extension), `ShapeMarkup`, `ImageMarkup`, `LinkMarkup`, `LoupeMarkup`. **Name clash:** PaperKit's protocol is called `Markup`, and so is our struct. Inside our module, refer to PaperKit's as `PaperKit.Markup`.
 
 `ShapeMarkup` (abridged):
 

@@ -1,11 +1,11 @@
 import CoreGraphics
 import Foundation
-import PaperCore
+@testable import PaperUI
 import PencilKit
 
 extension PKStroke {
     /// A straight pen stroke between two points, sampled every 10 pt.
-    public static func sample(from start: CGPoint, to end: CGPoint, id: UUID = UUID()) -> PKStroke {
+    static func sample(from start: CGPoint, to end: CGPoint, id: UUID = UUID()) -> PKStroke {
         let steps = max(2, Int(hypot(end.x - start.x, end.y - start.y) / 10))
         let points = (0...steps).map { i in
             let t = CGFloat(i) / CGFloat(steps)
@@ -23,7 +23,7 @@ extension PKStroke {
 
 extension PKDrawing {
     /// Two crossing strokes on a letter page.
-    public static var sample: PKDrawing {
+    static var sample: PKDrawing {
         PKDrawing(strokes: [
             .sample(from: CGPoint(x: 72, y: 72), to: CGPoint(x: 300, y: 300)),
             .sample(from: CGPoint(x: 300, y: 72), to: CGPoint(x: 72, y: 300)),

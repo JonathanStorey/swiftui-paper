@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import PaperModel
+@testable import PaperUI
 
 struct PaperSizeTests {
     @Test func letterIsPoints() {

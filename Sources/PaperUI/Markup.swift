@@ -1,17 +1,16 @@
 import CoreGraphics
 import Foundation
 import PaperKit
-@_exported import PaperModel
 
 /// The content layer of a sheet: a value wrapper around `PaperMarkup`.
 public struct Markup: Hashable, Sendable {
     /// The live PaperKit value, the single source of truth.
-    package private(set) var paperMarkup: PaperMarkup {
+    private(set) var paperMarkup: PaperMarkup {
         didSet { token = UUID() }
     }
 
     /// Regenerated on every mutation so equality checks are usually O(1).
-    package private(set) var token = UUID()
+    private(set) var token = UUID()
 
     public init(paperSize: PaperSize = .letter) {
         self.paperMarkup = PaperMarkup(bounds: CGRect(origin: .zero, size: paperSize.size))
@@ -21,7 +20,7 @@ public struct Markup: Hashable, Sendable {
         self.paperMarkup = try PaperMarkup(dataRepresentation: data)
     }
 
-    package init(_ paperMarkup: PaperMarkup) {
+    init(_ paperMarkup: PaperMarkup) {
         self.paperMarkup = paperMarkup
     }
 
@@ -37,8 +36,8 @@ public struct Markup: Hashable, Sendable {
         try await paperMarkup.dataRepresentation()
     }
 
-    /// Escape hatch for PaperCore internals and tests.
-    package mutating func withPaperMarkup<R>(_ body: (inout PaperMarkup) throws -> R) rethrows -> R {
+    /// Escape hatch for module internals and tests.
+    mutating func withPaperMarkup<R>(_ body: (inout PaperMarkup) throws -> R) rethrows -> R {
         try body(&paperMarkup)
     }
 
