@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.12, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.13, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -409,12 +409,34 @@ Text in the background comes from different frameworks:
 Because `Paper` holds both layers, it is the natural place to combine them:
 
 ```swift
-let text    = try await paper.recognizedText()             // background + handwriting, reading order
-let ink     = try await paper.markup.recognizedText()      // handwriting and text boxes only
-let matches = try await paper.search("invoice")            // [PaperTextMatch], each with bounds and source
+let all      = try await paper.recognizedText()                    // default: .all
+let notes    = try await paper.recognizedText(.handwriting)
+let printed  = try await paper.recognizedText([.typed, .background])
+let matches  = try await paper.search("invoice", in: .markup)      // same set type as recognizedText
 ```
 
-- **`PaperTextMatch`** carries the matched text, its rect in page coordinates, and whether it came from `.ink` or `.background`, so an app can highlight results over the page or jump to them with `setContentVisibleFrame`.
+The filter follows SwiftUI's `Edge` / `Edge.Set` pattern: a plain enum names one source, and a nested `OptionSet` selects several. One type serves both functions.
+
+```swift
+public enum PaperTextSource: Hashable, Sendable {
+    case handwriting   // ink, via PKStrokeRecognizer
+    case typed         // text boxes in the markup
+    case background    // PDF text layer or Vision OCR
+
+    public struct Set: OptionSet, Hashable, Sendable {
+        public static let handwriting, typed, background: Set
+        public static let markup: Set = [.handwriting, .typed]
+        public static let all: Set = [.handwriting, .typed, .background]
+    }
+}
+
+public func recognizedText(_ sources: PaperTextSource.Set = .all) async throws -> String
+public func search(_ query: String, in sources: PaperTextSource.Set = .all) async throws -> [PaperTextMatch]
+```
+
+Why an `OptionSet` rather than a single-choice enum: `.all` and `.markup` are real unions, and apps will want combinations like `[.typed, .background]` (all printed text). With an enum, every useful combination would need its own case. `Markup` has the same two functions, where `.background` simply contributes nothing. Whether typed text can be separated from handwriting depends on reading text boxes out of `subelements` (Phase 0).
+
+- **`PaperTextMatch`** carries the matched text, its rect in page coordinates, and its single `PaperTextSource`, so an app can highlight results over the page or jump to them with `setContentVisibleFrame`.
 - **Background recognition is cached** per `Paper` and keyed on the background data, since it only changes when the background does. OCR on a scanned page is the slow path, so it runs once.
 - **Ink recognition follows edits.** The coordinator feeds the recognizer after each stroke ends, and stroke IDs let it re-recognize only what changed.
 - **Higher-level AI is the app's call.** Summaries, questions, or extraction can pass `recognizedText()` to Apple's Foundation Models framework. The package supplies the text and its locations, not the model.
