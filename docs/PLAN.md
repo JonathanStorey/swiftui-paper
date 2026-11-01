@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.7, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.8, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -158,22 +158,42 @@ Why this shape wins:
 - **No redundant modifiers.** Editing on/off reads `\.isEnabled`, so `.disabled(true)` on the editor, or on any container above it, just works.
 - **Commands are value mutations.** `markup.insert(.rectangle, in: rect)` mirrors appending to a string.
 
-**Background content.** PaperKit's mechanism is `PaperMarkupViewController.contentView`, documented as "the content that markup appears on top of" and settable to any `UIView`/`NSView`. Apple's WWDC25 sample uses a `UIImageView` holding a template. Our API exposes it as a trailing view builder, like `ZStack` or `.background { }`:
+**Background content.** PaperKit's mechanism is `PaperMarkupViewController.contentView`, documented as "the content that markup appears on top of" and settable to any `UIView`/`NSView`. Apple's WWDC25 sample uses a `UIImageView` holding a template. Our API exposes it through initializers, following SwiftUI's pattern of one generic builder initializer plus convenience initializers for common cases (like `Label(_:systemImage:)` beside `Label { } icon: { }`):
 
 ```swift
-PaperEditor(markup: $markup) {
-    Image("worksheet").resizable()          // image template
+public struct PaperEditor<Background: View>: View {
+    // General form: any SwiftUI view as the paper's background
+    public init(markup: Binding<Markup>, @ViewBuilder on background: () -> Background)
 }
 
-PaperEditor(markup: $markup) {
-    PDFPageView(page)                       // ships with PaperUI, vector-sharp at any zoom
+extension PaperEditor where Background == EmptyView {
+    public init(markup: Binding<Markup>)                        // plain paper
+}
+extension PaperEditor where Background == Image {
+    public init(markup: Binding<Markup>, on image: Image)       // template image
+}
+extension PaperEditor where Background == PDFPageView {
+    public init(markup: Binding<Markup>, on page: PDFPage)      // one PDF page
 }
 ```
 
+```swift
+PaperEditor(markup: $markup)
+PaperEditor(markup: $markup, on: Image("worksheet"))
+PaperEditor(markup: $markup, on: pdf.page(at: 0)!)
+PaperEditor(markup: $markup) { GridPattern(spacing: 20) }
+```
+
+Design notes:
+- **The PDF initializer takes a `PDFPage`, not a `PDFDocument`.** A markup is one page, so the type says which page. Multi-page documents are the app's job (one `Markup` per page).
+- **Labels stay `on:` for every form.** The argument type picks the overload, so the call reads "editor for this markup, on this page," and the trailing-closure form drops the label as SwiftUI builders do.
+- **The background is laid out in the page's frame.** Whatever view is passed is sized to `markup.paperSize`, so an image stretches to the page like a `.resizable()` image in a fixed frame, and a PDF page fills it exactly.
+- **Initializers never resize the markup.** Writing to a binding from `init` is not allowed in SwiftUI. Matching sizes is done when the markup is created: `Markup(paperSize: PaperSize(page))` reads the PDF page's media box in points.
+
 Rules:
 - **A background is a view, not content.** It is not stored in `Markup`. The app persists which template or PDF page it used, the same way a PDF viewer keeps the PDF separate from annotations. Use `insertNewImage` only when the image should be a movable, selectable element.
-- **PDF fits our units exactly.** PDF pages are measured in points, so `Markup(paperSize: PaperSize(page.bounds(for: .mediaBox).size))` makes the page and the markup line up one to one with no scaling math.
-- **`PDFPageView`** is a small SwiftUI wrapper around a tiled `UIView` that draws a `PDFPage` with PDFKit, so it stays crisp when zoomed instead of blurring like a pre-rendered image.
+- **PDF fits our units exactly.** PDF pages are measured in points, so `Markup(paperSize: PaperSize(page))` makes the page and the markup line up one to one with no scaling math.
+- **`PDFPageView`** (public, usable on its own) is a small SwiftUI wrapper around a tiled `UIView` that draws a `PDFPage` with PDFKit, so it stays crisp when zoomed instead of blurring like a pre-rendered image.
 - **Export flattens both.** `markup.image(scale:background:)` draws the background, then the markup, matching Apple's thumbnail sample, which fills the context before calling `draw`.
 - **Plain paper color** stays on the markup (`PaperMarkup.backgroundColor`), because it is content.
 
