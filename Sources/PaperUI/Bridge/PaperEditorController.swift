@@ -140,7 +140,12 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
         isPushing = false
         lastPushedToken = current.token
         debugLog("pushed paper", current.token)
-        if sizeChanged { applyPlacement(previousViewSize: lastLayoutSize) }
+        if sizeChanged {
+            // A new page shape (rotate, resize) starts again from the resting placement.
+            userHasAdjustedView = false
+            updateBackground()
+            applyPlacement(previousViewSize: lastLayoutSize)
+        }
     }
 
     // MARK: Markup controller
@@ -334,6 +339,10 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
         let wanted = binding.wrappedValue
         guard wanted != pushedTool?.binding else { return }
         guard let pkTool = wanted.pkTool else {
+            // A custom tool has no PencilKit tool; selecting its picker item is the whole effect.
+            #if !os(macOS)
+            selectToolPickerItem(matching: wanted)
+            #endif
             pushedTool = (wanted, nil)
             return
         }
@@ -402,7 +411,7 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
     }
 
     private func visibleFrameDidChange() {
-        guard !isApplyingPlacement, let last = lastAppliedVisibleRect else { return }
+        guard !isApplyingPlacement, !isPushing, let last = lastAppliedVisibleRect else { return }
         let now = markupController.contentVisibleFrame
         let tolerance: CGFloat = 1
         if abs(now.minX - last.minX) > tolerance || abs(now.minY - last.minY) > tolerance || abs(now.width - last.width) > tolerance {
@@ -455,8 +464,12 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
             if attachedToolPicker != nil { state.toolPickerVisibility = .hidden }
             return
         }
-        let picker = PKToolPicker.perWindow(window)
+        let picker = PKToolPicker.perWindow(window, items: environment.paperToolPickerItems)
         if attachedToolPicker !== picker {
+            if let old = attachedToolPicker {
+                old.removeObserver(markupController)
+                old.removeObserver(self)
+            }
             picker.addObserver(markupController)
             picker.addObserver(self)
             picker.colorMaximumLinearExposure = features.maximumHDRExposure
@@ -479,6 +492,7 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
             case (.ink(let ink, _), let inking as PKToolPickerInkingItem): inking.inkingTool.inkType == ink.kind.inkType
             case (.eraser, is PKToolPickerEraserItem): true
             case (.lasso, is PKToolPickerLassoItem): true
+            case (.custom(let id), let custom as PKToolPickerCustomItem): custom.identifier == id
             default: false
             }
         }
@@ -544,11 +558,18 @@ extension PaperEditorController: PKToolPickerObserver {
 extension PKToolPicker {
     nonisolated(unsafe) private static let key = malloc(1)!
 
-    /// One picker per window (PLAN 6.3), shared by every editor in it.
-    static func perWindow(_ window: UIWindow) -> PKToolPicker {
-        if let picker = objc_getAssociatedObject(window, key) as? PKToolPicker { return picker }
-        let picker = PKToolPicker()
-        objc_setAssociatedObject(window, key, picker, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    /// One picker per window and item list (PLAN 6.3), shared by every editor in the window.
+    @MainActor
+    static func perWindow(_ window: UIWindow, items: [PaperToolPickerItem]) -> PKToolPicker {
+        final class Pickers { var byItems: [[PaperToolPickerItem]: PKToolPicker] = [:] }
+        let pickers = (objc_getAssociatedObject(window, key) as? Pickers) ?? {
+            let pickers = Pickers()
+            objc_setAssociatedObject(window, key, pickers, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            return pickers
+        }()
+        if let picker = pickers.byItems[items] { return picker }
+        let picker = items == PaperToolPickerItem.standard ? PKToolPicker() : PKToolPicker(toolItems: items.compactMap(\.pkItem))
+        pickers.byItems[items] = picker
         return picker
     }
 }

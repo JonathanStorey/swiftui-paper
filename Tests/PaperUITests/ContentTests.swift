@@ -171,3 +171,40 @@ struct RotationTests {
         #expect(bottom.elements.map(\.id) == expected)
     }
 }
+
+struct Phase2IntegrationTests {
+    /// The Phase 2 "done when": fill in a PDF worksheet, lock, rotate, thumbnail, share as PDF.
+    @Test func worksheetFlow() async throws {
+        var paper = Paper.samplePDF
+        paper.append(.sample)                       // fill in
+        paper.lockAll()                             // lock
+        paper.rotate(.clockwise)                    // rotate
+        #expect(paper.elements.allSatisfy { $0.isLocked }, "locks survive rotation")
+        let thumbnail = try await paper.image(fitting: CGSize(width: 240, height: 240))
+        #expect(thumbnail.width == 240)
+        #expect(thumbnail.height == 185)
+        let pdf = try #require(PDFDocument(data: try await paper.pdfData()))
+        #expect(pdf.page(at: 0)?.bounds(for: .mediaBox).size == CGSize(width: 792, height: 612))
+        let restored = try Paper(dataRepresentation: await paper.dataRepresentation())
+        #expect(restored.elements.allSatisfy { $0.isLocked })
+        #expect(restored.size == paper.size)
+    }
+}
+
+struct ToolPickerItemTests {
+    @Test func standardHasEveryInkThenEraserLassoRuler() {
+        let items = PaperToolPickerItem.standard
+        #expect(items.count == Paper.Ink.Kind.allCases.count + 3)
+        #expect(items.suffix(3) == [.eraser(.vector), .lasso, .ruler])
+    }
+
+    #if os(iOS)
+    @Test func itemsMapToPencilKit() {
+        #expect(PaperToolPickerItem.ink(.marker).pkItem is PKToolPickerInkingItem)
+        #expect(PaperToolPickerItem.lasso.pkItem is PKToolPickerLassoItem)
+        #expect(PaperToolPickerItem.ruler.pkItem is PKToolPickerRulerItem)
+        let custom = PaperToolPickerItem.custom(id: "stamp", name: "Stamp", systemImage: "seal").pkItem
+        #expect(custom?.identifier == "stamp")
+    }
+    #endif
+}

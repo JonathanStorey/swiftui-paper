@@ -19,9 +19,11 @@ extension View {
     }
 
     /// Shows the system tool picker on iOS and visionOS, or the markup toolbar on macOS.
-    /// Hiding the picker from the system UI writes back `false`.
-    public func paperToolPicker(isPresented: Binding<Bool>) -> some View {
+    /// Hiding the picker from the system UI writes back `false`. `items` sets the picker's tools
+    /// on iOS and visionOS; the macOS toolbar always shows its own set.
+    public func paperToolPicker(isPresented: Binding<Bool>, items: [PaperToolPickerItem] = PaperToolPickerItem.standard) -> some View {
         environment(\.paperToolPickerIsPresented, isPresented)
+            .environment(\.paperToolPickerItems, items)
     }
 
     /// What people can create in editors below this view. The default is `.latest`.
@@ -50,6 +52,7 @@ struct PaperContentPlacement: Hashable, Sendable {
 extension EnvironmentValues {
     @Entry var paperTool: Binding<Paper.Tool>? = nil
     @Entry var paperToolPickerIsPresented: Binding<Bool>? = nil
+    @Entry var paperToolPickerItems: [PaperToolPickerItem] = PaperToolPickerItem.standard
     @Entry var paperFeatures: Paper.Features = .latest
     @Entry var paperContentPlacement = PaperContentPlacement(mode: .fit, anchor: .center)
     @Entry var paperZoomRange: ClosedRange<CGFloat> = 1...4
