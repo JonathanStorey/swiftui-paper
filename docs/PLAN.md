@@ -930,6 +930,7 @@ Checked against Apple's PaperKit reference pages and the WWDC26 PencilKit sessio
 3. **Selection setter.** Can we assign `selection` programmatically? If not, selection ships as a callback.
 4. **`bounds` setter.** Settable directly, or must the `paperSize` setter rebuild the markup? Rotation depends on this too.
 5. **Removal.** Can elements and strokes be removed by mutating `subelements`, since `PaperMarkup` documents no remove method?
+7. **`append(contentsOf:)` and IDs.** Does appending one markup onto another (used by `flatten()`) preserve stroke UUIDs, and what happens when both contain the same ID?
 6. **Content modes on `setContentVisibleFrame`.** Confirm `.fitWidth` + `.top` anchor and resting-scale zoom can be built on it, and what `ScrollConfiguration` exposes.
 
 ### 9.3 Other risks
