@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.10, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.11, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -13,7 +13,7 @@ This project wraps all of that in an API that feels like it shipped in SwiftUI i
 3. Strokes with stable identity (`Identifiable`) built on the new stroke IDs.
 4. A module layout that keeps the portable model independent of UIKit and PaperKit so it can grow without rewrites.
 
-**Scope.** The package stops at the canvas. `PaperEditor` and the `Markup` value it binds to are the deliverable. Files, multi-page documents, and app metadata belong to the app that uses the package.
+**Scope.** The package stops at a single sheet of paper. `PaperEditor`, `PaperView`, and the `Paper` and `Markup` values they work with are the deliverable. Files, multi-page documents, and app metadata belong to the app that uses the package.
 
 > **Verify against the SDK.** Type names below that start with `PK` or `Paper` and are not ours (`PaperMarkup`, `FeatureSet`, `PKInkingTool`, `PKStroke`) refer to Apple's frameworks. Signatures confirmed from Apple's documentation are marked in Section 9.1. The rest must be checked against the SDK headers in Phase 0. The architecture does not depend on any single member name.
 
@@ -128,14 +128,14 @@ The full API is in Section 4.
 
 ```swift
 struct SketchView: View {
-    @State private var markup = Markup(paperSize: .letter)
+    @State private var paper = Paper(size: .letter)
     @State private var tool: PaperTool = .pen(.black, width: 3)
     @State private var selection = PaperSelection()
     @State private var showToolPicker = true
     @State private var showInsertMenu = false
 
     var body: some View {
-        PaperEditor(markup: $markup)
+        PaperEditor(paper: $paper)
             .paperTool($tool)                          // two-way: tool picker writes back
             .paperSelection($selection)                // two-way, like .focused($field)
             .paperContentMode(.fitWidth, anchor: .top) // like an Image content mode
@@ -152,11 +152,20 @@ struct SketchView: View {
 
 Why this shape wins:
 
-- **The markup is yours.** It lives in `@State`, a SwiftData `@Model`, or wherever your app keeps data. Saving, previews, and tests touch a plain value.
+- **The paper is yours.** It lives in `@State`, a SwiftData `@Model`, or wherever your app keeps data. Saving, previews, and tests touch a plain value.
 - **Each two-way piece is optional.** If you don't care about selection, don't bind it. `TextField` works the same way with `.focused`.
 - **Tools are values.** A custom SwiftUI palette and the system `PKToolPicker` can drive the same `@State var tool` at once, which makes a native SwiftUI toolbar a later add-on instead of a rewrite.
 - **No redundant modifiers.** Editing on/off reads `\.isEnabled`, so `.disabled(true)` on the editor, or on any container above it, just works.
-- **Commands are value mutations.** `markup.insert(.rectangle, in: rect)` mirrors appending to a string.
+- **Commands are value mutations.** `paper.markup.insert(.rectangle, in: rect)` mirrors appending to a string.
+
+**Two layers: `Paper` and `Markup`.** The test for what belongs together is "what does it take to draw this page correctly?" Size, background, and ink pass. Titles, page lists, and files do not. So the package has two value layers, and no document format:
+
+| Type | Holds | Use it when |
+|---|---|---|
+| `Paper` | `markup` + `background` | Most apps. One self-contained sheet: save it, share it, thumbnail it, with nothing else needed |
+| `Markup` | Ink, elements, paper size, paper color | Apps that manage backgrounds themselves, such as a 300-page annotated PDF that shouldn't copy each page into every sheet |
+
+Both layers work with every view: `PaperEditor(paper:)` or `PaperEditor(markup:on:)`, and `PaperView(paper)` or `PaperView(markup, on:)`. Types are in Section 5.6.
 
 **Background content.** PaperKit's mechanism is `PaperMarkupViewController.contentView`, documented as "the content that markup appears on top of" and settable to any `UIView`/`NSView`. Apple's WWDC25 sample uses a `UIImageView` holding a template. Our API exposes it through initializers, following SwiftUI's pattern of one generic builder initializer plus convenience initializers for common cases (like `Label(_:systemImage:)` beside `Label { } icon: { }`):
 
@@ -164,6 +173,10 @@ Why this shape wins:
 public struct PaperEditor<Background: View>: View {
     // General form: any SwiftUI view as the paper's background
     public init(markup: Binding<Markup>, @ViewBuilder on background: () -> Background)
+}
+
+extension PaperEditor where Background == PaperBackgroundView {
+    public init(paper: Binding<Paper>)                          // background comes from the Paper
 }
 
 extension PaperEditor where Background == EmptyView {
@@ -178,6 +191,7 @@ extension PaperEditor where Background == PDFPageView {
 ```
 
 ```swift
+PaperEditor(paper: $paper)                                   // the usual form
 PaperEditor(markup: $markup)
 PaperEditor(markup: $markup, on: Image("worksheet"))
 PaperEditor(markup: $markup, on: pdf.page(at: 0)!)
@@ -198,10 +212,10 @@ Design notes:
 - **Initializers never resize the markup.** Writing to a binding from `init` is not allowed in SwiftUI. Matching sizes is done when the markup is created: `Markup(paperSize: PaperSize(page))` reads the PDF page's media box in points.
 
 Rules:
-- **A background is a view, not content.** It is not stored in `Markup`. The app persists which template or PDF page it used, the same way a PDF viewer keeps the PDF separate from annotations. Use `insertNewImage` only when the image should be a movable, selectable element.
-- **PDF fits our units exactly.** PDF pages are measured in points, so `Markup(paperSize: PaperSize(page))` makes the page and the markup line up one to one with no scaling math.
+- **Where the background lives depends on the layer.** With `Paper`, it is stored alongside the markup and travels with it. With the `Markup` forms, it is a view the app supplies and persists however it likes, the way a PDF viewer keeps the PDF separate from annotations. Either way it is never inside Apple's blob. Use `insertNewImage` only when the image should be a movable, selectable element.
+- **PDF fits our units exactly.** PDF pages are measured in points, so `Paper(pdfPage: page)` sizes the markup to the page's media box and the two line up one to one with no scaling math.
 - **`PDFPageView`** (public, usable on its own) is a small SwiftUI wrapper around a tiled `UIView` that draws a `PDFPage` with PDFKit, so it stays crisp when zoomed instead of blurring like a pre-rendered image.
-- **Export flattens both.** `markup.image(size:background:)` and `markup.pdfData(background:)` draw the background, then the markup, matching Apple's thumbnail sample, which fills the context before calling `draw`.
+- **Export flattens both.** `paper.image(scale:)` and `paper.pdfData()` draw the background, then the markup, matching Apple's thumbnail sample, which fills the context before calling `draw`.
 - **Plain paper color** stays on the markup (`PaperMarkup.backgroundColor`), because it is content.
 
 Open questions for Phase 0: does `contentView` scale and scroll with the markup automatically, and does a `UIHostingController` view work there? Phase 3 ships `Image` and `PDFPageView` first, then arbitrary SwiftUI content.
@@ -341,36 +355,42 @@ Use the SwiftUI `onChange`/callback idiom rather than a delegate:
 
 Apple provides one rendering primitive: `PaperMarkup.draw(in: CGContext, frame:, options:) async`. Apple's own thumbnail sample creates a bitmap context, fills it white, and awaits `draw`. Everything here is built on that one call. The choice of `CGContext` decides the output format.
 
-**Data API on `Markup`:**
+**Data API on `Paper`.** Because the paper already knows its size, the main control is a scale, like `ImageRenderer.scale`:
 
 ```swift
-let cgImage = try await markup.image(size: CGSize(width: 300, height: 400))
-let pdf     = try await markup.pdfData(background: .pdfPage(page))
+let thumb = try await paper.image(scale: 0.25)                          // quarter of paper size
+let cell  = try await paper.image(fitting: CGSize(width: 120, height: 120))  // fixed grid cell
+let pdf   = try await paper.pdfData()                                   // true paper size
 ```
+
+- **`scale` is a `Double` relative to the paper size in points.** `1.0` on a letter page gives 612 × 792 pixels. For a sharp on-screen image, multiply by the screen's scale, which `PaperView` does automatically.
+- **`fitting:`** returns the largest image with the page's aspect ratio that fits the box, for grids with fixed cells.
+- **Background is always included,** because `Paper` carries it. That is the main reason `Paper` exists.
+- `Markup` has the same three functions without a background, for apps on the lower layer, which draw their own background into the context first.
 
 | Output | How it's made | Use it for |
 |---|---|---|
 | `CGImage` | Bitmap context | Thumbnails, lists, widgets. Convert with `Image(decorative:scale:)`, `UIImage(cgImage:)`, or encode PNG/JPEG/HEIC with ImageIO |
-| PDF `Data` | PDF context sized to `paperSize` | Print and share at true paper size. Because both PDF and `Markup` use points, the page maps one to one, and ink should stay vector if PaperKit draws vector into a PDF context (Phase 0 check) |
+| PDF `Data` | PDF context sized to the paper | Print and share at true paper size. A PDF background stays vector, and ink should too if PaperKit draws vector into a PDF context (Phase 0 check) |
 
-`CGImage` is the core format, not `UIImage`, so the API works the same on iOS and macOS and stays `Sendable`. `background` takes a `PaperBackgroundSource` (`.image(CGImage)`, `.pdfPage(PDFPage)`, `.color(CGColor)`) because export has no SwiftUI view hierarchy to host a view builder.
+`CGImage` is the core format, not `UIImage`, so the API works the same on iOS and macOS and stays `Sendable`.
 
-**`Transferable`.** `Markup` exports as PNG and PDF representations alongside its own data type, so `ShareLink(item: markup, preview: ...)` and drag-and-drop work with no extra code.
+**`Transferable`.** `Paper` exports as its own data type plus PNG and PDF representations, so `ShareLink(item: paper, preview: ...)` and drag-and-drop work with no extra code.
 
 **One read-only view: `PaperView`.** Rather than separate `PaperView` and `PaperThumbnail` types, there is one. A thumbnail is just a small `PaperView`.
 
 ```swift
-PaperView(markup)                      // plain paper
-PaperView(markup, on: pdfPage)         // same "on:" forms as PaperEditor
+PaperView(paper)                       // the usual form
+PaperView(markup, on: pdfPage)         // lower layer, same "on:" forms as PaperEditor
     .frame(width: 120)                 // size it like any view; it keeps the page's aspect ratio
 ```
 
 - **Renders a bitmap at its laid-out size** times `\.displayScale`, so a 120 pt thumbnail costs a 120 pt render, and a full-screen preview renders at full size.
-- **Async like `AsyncImage`.** Shows a placeholder (the paper color) until the render finishes. Rendering runs in `.task(id:)` keyed on the markup's token and size, so it re-renders only when the content or size actually changes.
+- **Async like `AsyncImage`.** Shows a placeholder (the paper color) until the render finishes. Rendering runs in `.task(id:)` keyed on the paper's content and size, so it re-renders only when the content or size actually changes.
 - **Cached by token.** Scrolling a grid of thumbnails back and forth doesn't re-render unchanged pages.
 - **Sizes like `Image`.** Its ideal size is the paper size and it respects `.aspectRatio`, so `.frame(width:)` alone gives a correctly shaped thumbnail.
 - **Not zoomable.** A read-only page that zooms is `PaperEditor` with `.disabled(true)`.
-- **Not `ImageRenderer`-compatible.** `ImageRenderer` renders synchronously and would capture the placeholder. Use `markup.image(size:)` instead.
+- **Not `ImageRenderer`-compatible.** `ImageRenderer` renders synchronously and would capture the placeholder. Use `paper.image(scale:)` instead.
 
 ---
 
@@ -512,8 +532,10 @@ public struct Markup: Codable, Hashable, Sendable, Transferable {
     public mutating func remove(_ ids: some Collection<PaperElement.ID>)   // pending Phase 0
 
     public func data() async throws -> Data        // wraps async dataRepresentation()
-    public func image(size: CGSize, background: PaperBackgroundSource? = nil) async throws -> CGImage
-    public func pdfData(background: PaperBackgroundSource? = nil) async throws -> Data
+    public var paperColor: CGColor? { get set }    // PaperMarkup.backgroundColor, part of the content
+    public func image(scale: Double) async throws -> CGImage
+    public func image(fitting box: CGSize) async throws -> CGImage
+    public func pdfData() async throws -> Data
 }
 ```
 
@@ -541,7 +563,42 @@ Key decisions:
 - **Removal is unconfirmed.** The documented `PaperMarkup` API can insert, append, and transform, but shows no remove method. Removal may work by mutating `subelements`. Until Phase 0 confirms it, `remove(_:)` is provisional.
 - **Name.** Apple owns `PaperMarkup`, so ours is `Markup`, disambiguated as `PaperUI.Markup` if ever needed.
 - **Strokes and elements are never stored separately.** Z-order lives in the markup, Apple's blob carries data we cannot reconstruct, and two editable copies eventually disagree.
-- **Off-screen rendering.** `image(size:background:)` and `pdfData(background:)` are `async` because Apple's `draw(in:frame:options:)` is. See Section 4.7.
+- **Off-screen rendering.** `image(scale:)`, `image(fitting:)`, and `pdfData()` are `async` because Apple's `draw(in:frame:options:)` is. See Section 4.7.
+
+### 5.6 Paper
+
+```swift
+public struct Paper: Codable, Hashable, Sendable, Transferable {
+    public var markup: Markup
+    public var background: PaperBackground?
+
+    public init(size: PaperSize = .letter, background: PaperBackground? = nil)
+    public init(pdfPage: PDFPage)                       // size from the page's media box
+    public init(image: CGImage, size: PaperSize)        // image stretched to the page
+
+    public var size: PaperSize { get set }              // forwards to markup.paperSize
+    public mutating func rotate(_ turn: PaperRotation)  // turns markup and background together
+
+    public func image(scale: Double) async throws -> CGImage
+    public func image(fitting box: CGSize) async throws -> CGImage
+    public func pdfData() async throws -> Data
+}
+
+public enum PaperBackground: Codable, Hashable, Sendable {
+    case image(Data)       // encoded PNG / JPEG / HEIC, stretched to the page
+    case pdfPage(Data)     // a single-page PDF, extracted from the source document
+}
+```
+
+Key decisions:
+
+- **Embedded, not referenced.** The background is stored as data, so a `Paper` is self-contained. A reference (a file URL or an ID the app resolves) would make the value meaningless outside the app that created it, which is the problem `Paper` exists to solve. Apps that can't afford embedding use the `Markup` layer.
+- **PDF pages are extracted.** `Paper(pdfPage:)` copies the one page into a single-page PDF, so the stored data covers that page, not the whole source document. Shared fonts and resources are duplicated per page, an acceptable cost for a self-contained sheet.
+- **No `.color` case.** Paper color is already stored in Apple's blob (`PaperMarkup.backgroundColor`), exposed as `markup.paperColor`. Storing it again in `PaperBackground` would recreate the two-sources-of-truth problem we removed for size.
+- **One size.** `paper.size` forwards to `markup.paperSize`. The background has no size of its own: it is always drawn to fill the page.
+- **Rotation turns everything.** `paper.rotate(.clockwise)` rotates the markup (Section 5.5) and the background together, so the template stays aligned with the ink. Both stay lossless: a PDF page gets its page rotation attribute updated (no re-rendering), and an image is rotated by whole pixels and re-encoded as PNG.
+- **Equality.** `==` checks the markup first (cheap token check) and compares background data only when the markups are equal. Backgrounds rarely change, so this almost never costs anything.
+- **`PaperBackgroundView`** is the internal view `PaperEditor(paper:)` builds from a `PaperBackground`: the tiled PDF view for `.pdfPage`, and a hosted image for `.image`.
 
 ---
 
@@ -576,6 +633,7 @@ swiftui-paper/
 │  │  └─ State/PaperSelection.swift, PaperGeometry.swift, PaperFeatures.swift, PaperContentMode.swift
 │  ├─ PaperCore/           # imports PaperKit + PencilKit; owns Markup
 │  │  ├─ Markup/Markup.swift, Markup+Codable.swift, ProjectionCache.swift, PaperElement.swift
+│  │  ├─ Paper/Paper.swift, PaperBackground.swift, Paper+Rendering.swift
 │  │  └─ Conversions/PKTool+PaperTool.swift, PKStroke+PaperStroke.swift, FeatureSet+PaperFeatures.swift
 │  ├─ PaperUI/             # public SwiftUI API; @_exported import PaperModel, PaperCore
 │  │  ├─ PaperEditor.swift
@@ -597,7 +655,7 @@ swiftui-paper/
 Rules that keep this healthy:
 
 - **`PaperModel`** never imports UIKit, AppKit, SwiftUI, PencilKit, or PaperKit. It holds everything that is plain data: tools, inks, colors, sizes, strokes, selection, geometry. It compiles and tests on any platform and can be shared with a server or widget.
-- **`PaperCore`** is the only target that touches Apple's markup frameworks. It owns `Markup`, because `Markup` wraps a live `PaperMarkup`. If Apple renames something, this target changes and nothing else does.
+- **`PaperCore`** is the only target that touches Apple's markup frameworks. It owns `Markup`, because `Markup` wraps a live `PaperMarkup`, and `Paper`, because `Paper` contains a `Markup` and renders PDF backgrounds with PDFKit. If Apple renames something, this target changes and nothing else does.
 - **`PaperUI`** holds the SwiftUI views and modifiers and re-exports the other two, so app code needs one import.
 - Use Swift Testing (`@Test`) throughout. Property-style tests check that `decode(encode(x)) == x` and that `a == b` implies equal hashes.
 
@@ -610,7 +668,7 @@ Platforms: iOS 27, iPadOS 27, macOS 27, and visionOS 27 minimum. PaperKit itself
 | Phase | Deliverable | Done when |
 |---|---|---|
 | **0. Spike** | Bare `PaperEditor(markup:)` on iPad that answers the checks in Section 9.2 | Markup round-trips through `@State` without loops; strokes found in `subelements` with UUIDs that survive save; selection can (or provably cannot) be set; `bounds` setter behavior known; `.fitWidth` + `.top` anchor works |
-| **1. Model** | `PaperModel` types, `Markup` in `PaperCore`, `Codable`/`Hashable` tests, tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes; stroke IDs survive save and reload; `paperSize` get/set round-trips; four quarter turns return an equal markup with the same IDs |
+| **1. Model** | `PaperModel` types, `Markup` in `PaperCore`, `Codable`/`Hashable` tests, tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes; stroke IDs survive save and reload; `paperSize` get/set round-trips; four quarter turns return an equal markup with the same IDs; `Paper` round-trips through `Codable` with its background |
 | **2. Core API** | `.paperTool`, `.paperFeatures`, `.paperToolPicker(isPresented:)`, `.disabled`, `.paperContentMode`, `.paperZoomRange`, loop-safe coordinator | Tool picker and a SwiftUI button both change the tool with no flicker; all four content modes behave through rotation |
 | **3. Interaction** | Selection (binding or callback per Phase 0), `PaperView`, image and PDF export, `onPaperGeometryChange`, insertion menu, `Image` and `PDFPageView` backgrounds, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
 | **4. Native UI** | `PaperToolbar` in pure SwiftUI | Demo app ships without `PKToolPicker` |
@@ -659,7 +717,7 @@ Checked against Apple's PaperKit reference pages and the WWDC26 PencilKit sessio
 
 ## 10. Recommendation
 
-Build **Option E**. Bind the markup like `TextEditor`, configure with environment modifiers and SwiftUI's own `.disabled`, bind tool and selection like `@FocusState`, place the page like an `Image` content mode, observe zoom like `onScrollGeometryChange`, and route undo through the standard `undoManager`. Keep the coordinator, but keep it private. Skip custom property wrappers and reader/proxy types.
+Build **Option E**. Bind the paper like `TextEditor`, configure with environment modifiers and SwiftUI's own `.disabled`, bind tool and selection like `@FocusState`, place the page like an `Image` content mode, observe zoom like `onScrollGeometryChange`, and route undo through the standard `undoManager`. Keep the coordinator, but keep it private. Skip custom property wrappers and reader/proxy types.
 
 The case is simple. Every piece of this API already has a SwiftUI precedent, so a developer who knows SwiftUI already knows how to use it. The markup stays in the developer's hands as a plain value, which makes persistence, previews, and testing trivial. Tools as value types are the quiet multiplier: they let a pure SwiftUI toolbar, saved favorites, and sync all share one `@State` without touching PencilKit. A public `PaperContext` would have been faster to write and slower to live with, and SwiftUI's steady shift from proxies to plain values shows which direction to bet on.
 
