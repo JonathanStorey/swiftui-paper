@@ -1,5 +1,4 @@
 import Foundation
-import Observation
 import PaperKit
 import PencilKit
 import SwiftUI
@@ -32,7 +31,6 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
 
     // The tool last pushed from the binding, and how PencilKit reported it back.
     private var pushedTool: (binding: Paper.Tool, readBack: Paper.Tool?)?
-    private var observationGeneration = 0
 
     // Content mode
     private var placement: PaperContentPlacement
@@ -47,6 +45,7 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
     private var canvasTopConstraint: NSLayoutConstraint?
     #else
     private weak var attachedToolPicker: PKToolPicker?
+    private var isSelectingToolPickerItem = false
     #endif
 
     init(paper: Binding<Paper>, environment: EnvironmentValues) {
@@ -155,7 +154,6 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
 
         pushedTool = nil
         pushToolIfNeeded()
-        observeTool()
     }
 
     /// The feature set is fixed at init, so a change means a new controller holding the current content.
@@ -192,7 +190,8 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
     nonisolated func paperMarkupViewControllerDidChangeSelection(_ controller: PaperMarkupViewController) {
         MainActor.assumeIsolated {
             debugLog("selection changed:", markupController.selection.count, "element(s)",
-                     "locked:", markupController.selection.filter(isLocked).count)
+                     "locked:", markupController.selection.filter(isLocked).count,
+                     "selectedMarkup:", markupController.selectedMarkup.subelements.count, "element(s)")
         }
     }
 
@@ -238,22 +237,11 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
         pushedTool = (wanted, Paper.Tool(markupController.drawingTool))
     }
 
-    private func observeTool() {
-        observationGeneration += 1
-        let generation = observationGeneration
-        withObservationTracking {
-            _ = markupController.drawingTool
-        } onChange: { [weak self] in
-            Task { @MainActor in
-                guard let self, generation == self.observationGeneration else { return }
-                self.toolDidChange()
-                self.observeTool()
-            }
-        }
-    }
-
-    private func toolDidChange() {
-        guard let binding = environment.paperTool, let current = Paper.Tool(markupController.drawingTool) else { return }
+    /// Called when the picker or toolbar selects a tool. The controller draws with the picker's
+    /// tool but does not update `drawingTool` (and Observation does not fire), so the picker's
+    /// own selection is the source.
+    private func toolDidChange(to current: Paper.Tool) {
+        guard let binding = environment.paperTool else { return }
         guard current != pushedTool?.readBack, current != binding.wrappedValue else { return }
         pushedTool = (current, current)
         binding.wrappedValue = current
@@ -288,6 +276,12 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
             rect = placement.restingVisibleRect(view: viewSize, page: page, layoutDirection: environment.layoutDirection)
         }
 
+        // The canvas must have its new size before it can place a rect in it.
+        #if os(macOS)
+        markupController.view.layoutSubtreeIfNeeded()
+        #else
+        markupController.view.layoutIfNeeded()
+        #endif
         isApplyingPlacement = true
         markupController.zoomRange = (zoomRange.lowerBound * resting)...(zoomRange.upperBound * resting)
         markupController.setContentVisibleFrame(rect, animated: false)
@@ -316,7 +310,7 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
         let wantsToolbar = environment.paperToolPickerIsPresented?.wrappedValue ?? false
         if wantsToolbar, toolbar == nil {
             let toolbar = MarkupToolbarViewController(supportedFeatureSet: features.featureSet)
-            toolbar.delegate = markupController
+            toolbar.delegate = self
             toolbar.selectedDrawingTool = markupController.drawingTool
             addChild(toolbar)
             let bar = toolbar.view
@@ -361,6 +355,8 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
             picker.colorMaximumLinearExposure = features.maximumHDRExposure
             state.activeToolPicker = picker
             attachedToolPicker = picker
+            pushedTool = nil
+            pushToolIfNeeded()   // now that there is a picker to show the tool
         }
         state.toolPickerVisibility = isPresented.wrappedValue ? .visible : .hidden
         if isPresented.wrappedValue, !markupController.isFirstResponder {
@@ -380,13 +376,44 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
             }
         }
         if let item, picker.selectedToolItemIdentifier != item.identifier {
+            // The picker reports this selection with the item's own width and color. Ignore that echo.
+            isSelectingToolPickerItem = true
             picker.selectedToolItemIdentifier = item.identifier
+            isSelectingToolPickerItem = false
         }
     }
     #endif
 }
 
-#if !os(macOS)
+#if os(macOS)
+/// Forwards the toolbar to the markup controller, and reports tool changes to the binding.
+extension PaperEditorController: @preconcurrency MarkupToolbarViewController.Delegate {
+    func markupToolbarViewController(_ toolbar: MarkupToolbarViewController, insertNewShape type: ShapeConfiguration.Shape) {
+        markupController.markupToolbarViewController(toolbar, insertNewShape: type)
+    }
+
+    func markupToolbarViewControllerInsertNewTextbox(_ toolbar: MarkupToolbarViewController) {
+        markupController.markupToolbarViewControllerInsertNewTextbox(toolbar)
+    }
+
+    func markupToolbarViewController(_ toolbar: MarkupToolbarViewController, insertNewLineWithStartMarker lineStartMarker: Bool, endMarker lineEndMarker: Bool) {
+        markupController.markupToolbarViewController(toolbar, insertNewLineWithStartMarker: lineStartMarker, endMarker: lineEndMarker)
+    }
+
+    func markupToolbarViewController(_ toolbar: MarkupToolbarViewController, insertNewContents toInsert: PaperMarkup) {
+        markupController.markupToolbarViewController(toolbar, insertNewContents: toInsert)
+    }
+
+    func markupToolbarViewControllerSelectedIndirectPointerTouchModeChanged(_ toolbar: MarkupToolbarViewController) {
+        markupController.markupToolbarViewControllerSelectedIndirectPointerTouchModeChanged(toolbar)
+    }
+
+    func markupToolbarViewControllerSelectedDrawingToolChanged(_ toolbar: MarkupToolbarViewController) {
+        markupController.markupToolbarViewControllerSelectedDrawingToolChanged(toolbar)
+        if let tool = Paper.Tool(toolbar.selectedDrawingTool) { toolDidChange(to: tool) }
+    }
+}
+#else
 extension PaperEditorController: PKToolPickerObserver {
     func toolPickerVisibilityDidChange(_ toolPicker: PKToolPicker) {
         guard let isPresented = environment.paperToolPickerIsPresented,
@@ -394,6 +421,16 @@ extension PaperEditorController: PKToolPickerObserver {
               isPresented.wrappedValue != toolPicker.isVisible
         else { return }
         isPresented.wrappedValue = toolPicker.isVisible
+    }
+
+    func toolPickerSelectedToolItemDidChange(_ toolPicker: PKToolPicker) {
+        guard toolPicker === attachedToolPicker, !isSelectingToolPickerItem else { return }
+        let item = toolPicker.selectedToolItem
+        if let tool = item.tool.flatMap(Paper.Tool.init) {
+            toolDidChange(to: tool)
+        } else if item is PKToolPickerCustomItem {
+            toolDidChange(to: .custom(id: item.identifier))
+        }
     }
 }
 
