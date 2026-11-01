@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.8, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.9, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -192,6 +192,9 @@ Design notes:
   - *View builder and `Image`:* the SwiftUI view is placed in a `UIHostingController`, and its view becomes `contentView`. (A SwiftUI `Image` can't be turned back into a `UIImage`, so it is hosted like any other view. Hosting a single image is cheap.)
   - *`PDFPage`:* skips SwiftUI entirely. The bridge assigns a native `CATiledLayer`-backed view that draws the page with PDFKit, because tiled drawing is what keeps vector content sharp as the user zooms. `PDFPageView` is just the SwiftUI face of that same view for use elsewhere.
   - *Zoom sharpness:* hosted and image backgrounds are limited by their resolution, as in Apple's `UIImageView` sample. Only the PDF path re-renders at every zoom level.
+- **Initializers take only what the editor *is*: the markup and the paper it sits on.** Everything about *how* it behaves (tool, selection, features, content mode, zoom) stays a modifier, as with `TextEditor(text:)` plus `.font`, `.disabled`, and `.focused`. That includes the feature set even though `PaperMarkupViewController`'s initializer requires one: its `supportedFeatureSet` is a settable property, so `.paperFeatures` defaults to `.latest` and updates it.
+- **Placeholders use the markup, not an init parameter.** `Markup.isEmpty` lets apps write `.overlay { if markup.isEmpty { Text("Draw here") } }` with no extra API.
+- **Display-only is a different view.** Like `Text` beside `TextEditor`, a read-only `PaperView(markup)` takes a plain value instead of a binding. In v1, `PaperThumbnail` fills that role.
 - **Initializers never resize the markup.** Writing to a binding from `init` is not allowed in SwiftUI. Matching sizes is done when the markup is created: `Markup(paperSize: PaperSize(page))` reads the PDF page's media box in points.
 
 Rules:
@@ -465,6 +468,7 @@ public struct Markup: Codable, Hashable, Sendable, Transferable {
         set { base.bounds = CGRect(origin: .zero, size: newValue.size) }
     }
 
+    public var isEmpty: Bool { get }               // no strokes or elements
     public var strokes: [PaperStroke] { get }      // decoded on first read, cached
     public var elements: [PaperElement] { get }    // decoded on first read, cached
     public mutating func insert(_ element: PaperElement.Template, in rect: CGRect)
