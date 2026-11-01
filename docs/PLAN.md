@@ -288,8 +288,8 @@ extension Paper {
         public static let black, white, red, blue, green, yellow: Color
     }
 }
-// PaperUI: Paper.Color.init(_ resolved: SwiftUI.Color.Resolved),
-//          init(_ color: SwiftUI.Color, in environment: EnvironmentValues), var color: SwiftUI.Color
+// SwiftUI bridge: Paper.Color.init(_ resolved: SwiftUI.Color.Resolved),
+//                init(_ color: SwiftUI.Color, in environment: EnvironmentValues), var color: SwiftUI.Color
 ```
 
 ### 4.3 Content types
@@ -340,7 +340,7 @@ extension Paper {
         public mutating func clear()
     }
 }
-// PaperUI: extension Path { public init(_ stroke: Paper.Stroke) }
+// SwiftUI bridge: extension Path { public init(_ stroke: Paper.Stroke) }
 ```
 
 Elements and strokes are snapshots. Their fields are `let`, and all edits go through `Paper`. `Stroke` hashes by `id` only, while equality compares every field.
@@ -581,16 +581,14 @@ let paper = try Paper(dataRepresentation: data)
 
 ```
 Sources/
-├─ PaperCore/    PaperKit + PencilKit + PDFKit + Vision. Paper and every nested type,
-│                conversions, rendering, recognition, file format
-├─ PaperUI/      SwiftUI. PaperEditor, PaperView, PDFPageView, modifiers, editor setting types,
-│                coordinator. @_exported import PaperCore
-└─ PaperTesting/ Paper.sample, Paper.samplePDF, fixtures
-Tests/           PaperCoreTests, PaperUITests (Swift Testing)
+└─ PaperUI/      One library. Paper and every nested type, SwiftUI views, modifiers,
+                 editor setting types, coordinator, rendering, recognition, file format.
+                 Sample data (Paper.sample, Paper.samplePDF) for previews and tests.
+Tests/           PaperUITests (Swift Testing)
 Demo/            iPad app exercising every public API
 ```
 
-`swift-tools-version: 6.4` (needed for `.v27` platforms). Nested types must live in the module that defines `Paper`, so all value types are in `PaperCore`. Inside `extension Paper` in PaperUI, write `SwiftUI.Color` and `SwiftUI.Shape`, because the bare names resolve to `Paper.Color` and `Paper.Shape`.
+`swift-tools-version: 6.4` (needed for `.v27` platforms). One module, one `import PaperUI`. Every client of `Paper` is a SwiftUI app on a 27 OS, so a separate UI-free module buys nothing, and splitting later is cheap if a real need appears. Organize by folder instead: `Model/` (Paper and nested types), `Views/`, `Modifiers/`, `Bridge/` (PaperKit conversions and the coordinator), `Output/` (rendering, recognition, file format), `Samples/`. Inside `extension Paper`, write `SwiftUI.Color` and `SwiftUI.Shape`, because the bare names resolve to `Paper.Color` and `Paper.Shape`.
 
 ### 6.2 `Paper` storage
 
@@ -661,7 +659,7 @@ The SDK check and the package skeleton are done: 18 tests pass on macOS 27 and t
 
 ### Phase 1: A working editor (MVP)
 
-- Rework the skeleton to v2.1: merge PaperModel into PaperCore, use a single `Paper` type, and adopt the nested names.
+- Rework the skeleton to v2.1: collapse the four targets into the single `PaperUI` module, use a single `Paper` type, and adopt the nested names.
 - `Paper` storage (6.2), `size`, `color`, `dataRepresentation`, and the `Codable` snapshot.
 - `PaperEditor(paper:)` with `.paperTool`, `.paperToolPicker(isPresented:)`, `.paperFeatures`, `.paperContentMode`, `.paperZoomRange`, `.disabled`, and `\.undoManager`.
 - The coordinator's loop prevention and coalescing.
