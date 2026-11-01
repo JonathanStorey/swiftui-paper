@@ -774,6 +774,7 @@ public struct Paper: Codable, Hashable, Sendable, Transferable {
     public var background: PaperBackground?
 
     public init(size: PaperSize = .letter, background: PaperBackground? = nil)
+    public init(markup: Markup, background: PaperBackground? = nil)
     public init(pdfPage: PDFPage)                       // size from the page's media box
     public init(image: CGImage, size: PaperSize)        // image stretched to the page
 
