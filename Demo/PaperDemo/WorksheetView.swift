@@ -135,7 +135,8 @@ enum ToolChoice: Hashable {
 
 /// Saves the paper with `dataRepresentation()` and restores it on launch.
 ///
-/// Launch arguments: `-reset` starts from a blank page, `-sample` loads `Paper.sample`, and
+/// Launch arguments: `-reset` starts from a blank page, `-sample` loads `Paper.sample`, `-worksheet`
+/// loads it over `Paper.samplePDF`, and
 /// `-sampleLocked` loads it with every stroke locked (for the eraser and lasso UI check).
 enum DemoStore {
     static let url = URL.documentsDirectory.appending(path: "Worksheet.swiftpaper")
@@ -144,6 +145,11 @@ enum DemoStore {
         let arguments = ProcessInfo.processInfo.arguments
         #if DEBUG
         if arguments.contains("-sample") { return .sample }
+        if arguments.contains("-worksheet") {
+            var paper = Paper.samplePDF
+            paper.append(.sample)
+            return paper
+        }
         if arguments.contains("-sampleLocked") {
             var paper = Paper.sample
             paper.lockAll()

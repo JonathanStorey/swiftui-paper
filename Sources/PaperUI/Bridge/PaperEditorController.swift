@@ -21,6 +21,7 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
     private(set) var markupController: PaperMarkupViewController
     private var paper: Binding<Paper>
     private var environment: EnvironmentValues
+    private var background: EditorBackground
     private var features: Paper.Features
 
     // Loop prevention: the controller is written only when the binding's token matches neither.
@@ -40,6 +41,14 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
     private var userHasAdjustedView = false
     private var isApplyingPlacement = false
 
+    // Background (contentView)
+    private var installedBackground: BackgroundKey?
+    #if os(macOS)
+    private var backgroundHost: NSHostingView<AnyView>?
+    #else
+    private var backgroundHost: UIHostingController<AnyView>?
+    #endif
+
     #if os(macOS)
     private var toolbar: MarkupToolbarViewController?
     private var canvasTopConstraint: NSLayoutConstraint?
@@ -48,8 +57,9 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
     private var isSelectingToolPickerItem = false
     #endif
 
-    init(paper: Binding<Paper>, environment: EnvironmentValues) {
+    init(paper: Binding<Paper>, background: EditorBackground, environment: EnvironmentValues) {
         self.paper = paper
+        self.background = background
         self.environment = environment
         self.features = environment.paperFeatures
         self.placement = environment.paperContentPlacement
@@ -73,6 +83,7 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
     override func viewDidLoad() {
         super.viewDidLoad()
         installMarkupController()
+        updateBackground()
     }
 
     #if os(macOS)
@@ -97,8 +108,9 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
 
     // MARK: Updates from SwiftUI
 
-    func update(paper: Binding<Paper>, environment: EnvironmentValues) {
+    func update(paper: Binding<Paper>, background: EditorBackground, environment: EnvironmentValues) {
         self.paper = paper
+        self.background = background
         self.environment = environment
 
         if environment.paperFeatures != features {
@@ -106,6 +118,7 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
             rebuildMarkupController()
         }
         pushPaperIfNeeded()
+        updateBackground()
         markupController.isEditable = environment.isEnabled
         pushToolIfNeeded()
 
@@ -173,8 +186,102 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
         markupController = PaperMarkupViewController(markup: paper.wrappedValue.markup, supportedFeatureSet: features.featureSet)
         lastPushedToken = paper.wrappedValue.token
         installMarkupController()
+        installedBackground = nil
+        updateBackground()
         applyPlacement(previousViewSize: lastLayoutSize)
         debugLog("rebuilt controller for features", features)
+    }
+
+    // MARK: Background
+
+    /// What is installed as `contentView`, so it is rebuilt only when the source changes.
+    private enum BackgroundKey: Equatable {
+        case none
+        case stored(Paper.Background)
+        case page(ObjectIdentifier)
+        case view
+    }
+
+    private func updateBackground() {
+        let key: BackgroundKey = switch background {
+        case .stored: paper.wrappedValue.background.map(BackgroundKey.stored) ?? .none
+        case .pdfPage(let page): .page(ObjectIdentifier(page))
+        case .view: .view
+        }
+        if key != installedBackground {
+            installBackground(key)
+            installedBackground = key
+        }
+        if case .view(let view) = background {
+            backgroundHost?.rootView = view
+        }
+        // The content view is framed to the page rect in page coordinates (PLAN 2.1).
+        let pageRect = CGRect(origin: .zero, size: paper.wrappedValue.size.size)
+        guard let contentView = markupController.contentView else { return }
+        if contentView.frame != pageRect {
+            contentView.frame = pageRect
+        }
+        // A custom contentView replaces PaperKit's own white page, so it paints the paper color.
+        let paperColor = (paper.wrappedValue.color ?? .white).cgColor
+        #if os(macOS)
+        contentView.wantsLayer = true
+        if contentView.layer?.backgroundColor != paperColor { contentView.layer?.backgroundColor = paperColor }
+        #else
+        if contentView.layer.backgroundColor != paperColor { contentView.layer.backgroundColor = paperColor }
+        #endif
+    }
+
+    private func installBackground(_ key: BackgroundKey) {
+        #if os(macOS)
+        backgroundHost = nil
+        #else
+        if let host = backgroundHost {
+            host.willMove(toParent: nil)
+            host.removeFromParent()
+            backgroundHost = nil
+        }
+        #endif
+
+        let view: PlatformView?
+        switch (key, background) {
+        case (.stored(.pdfPage(let data)), _):
+            view = PDFTiledView(page: CGPDFDocument(CGDataProvider(data: data as CFData)!)?.page(at: 1))
+        case (.stored(.image(let data)), _):
+            view = CGImage.decoded(from: data).map(Self.stretchedImageView)
+        case (.page, .pdfPage(let page)):
+            view = PDFTiledView(page: page.pageRef)
+        case (.view, .view(let content)):
+            #if os(macOS)
+            let host = NSHostingView(rootView: content)
+            backgroundHost = host
+            view = host
+            #else
+            let host = UIHostingController(rootView: content)
+            host.view.backgroundColor = .clear
+            host.sizingOptions = []
+            addChild(host)
+            host.didMove(toParent: self)
+            backgroundHost = host
+            view = host.view
+            #endif
+        default:
+            view = nil
+        }
+        view?.frame = CGRect(origin: .zero, size: paper.wrappedValue.size.size)
+        markupController.contentView = view
+        debugLog("background installed:", key)
+    }
+
+    private static func stretchedImageView(_ image: CGImage) -> PlatformView {
+        #if os(macOS)
+        let view = NSImageView(image: NSImage(cgImage: image, size: .zero))
+        view.imageScaling = .scaleAxesIndependently
+        return view
+        #else
+        let view = UIImageView(image: UIImage(cgImage: image))
+        view.contentMode = .scaleToFill
+        return view
+        #endif
     }
 
     // MARK: Delegate
