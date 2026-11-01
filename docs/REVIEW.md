@@ -77,3 +77,65 @@ These are the places where the API promises something the wrapped view controlle
 - **Tools as a `Codable` enum.** This is low risk, high payoff, and independent of every PaperKit unknown.
 - **The private coordinator.** It is the right home for all the density, and the loop-prevention token scheme is correct.
 - **Paper size in points on the markup**, and **`Image`-style content modes**. Both are clean and well argued.
+
+---
+
+# Review 2: PaperKit coverage audit
+
+**Reviewed:** PLAN.md v1.13 on 2026-11-01, against the documented PaperKit API (`PaperMarkup`, `PaperMarkupViewController`, `FeatureSet`) and the iOS 27 PencilKit additions from WWDC26 session 203.
+
+**Verdict:** The architecture covers PaperKit well. The gaps are surface area: several documented capabilities have no public path through our API, and one gap (revealing a search result) contradicts a decision we made earlier.
+
+## Tier 1: Missing capabilities that most apps will need
+
+### 1. Revealing a rect, which search now requires
+Section 4.8 says search results can be jumped to with `setContentVisibleFrame`, but programmatic zoom and scroll are "out of v1." Search now provides the real use case we said we'd wait for. Options:
+- **`.paperScrollPosition($position)`**, mirroring SwiftUI's `ScrollPosition`: the app calls `position.scrollTo(rect:)`, and the editor reports where it landed. This is Apple's current pattern, though we called it un-Swifty for zoom.
+- **A one-shot reveal binding**, `.paperReveal($rect)`: the app sets a rect, the editor scrolls to it and sets the binding back to `nil`. It is simpler, but the editor writing back to clear it is unusual.
+- **Recommendation:** `ScrollPosition`-style. Apple chose it for the same problem, and it covers "zoom to selection" too.
+
+### 2. Defining elements to insert (`PaperElement.Template`)
+`insert(_:in:)` takes a template the plan never defines. PaperKit's insert API is specific, and our type should mirror it:
+```swift
+public enum PaperElementTemplate: Hashable, Sendable {
+    case shape(PaperShape, style: PaperShapeStyle, rotation: Angle = .zero)     // ShapeConfiguration
+    case line(from: CGPoint, to: CGPoint, style: PaperShapeStyle,
+              startArrow: Bool = false, endArrow: Bool = true)                   // insertNewLine markers
+    case text(AttributedString, rotation: Angle = .zero)                          // insertNewTextbox
+    case image(CGImage, rotation: Angle = .zero)                                  // insertNewImage
+}
+```
+`PaperShapeStyle` wraps `ShapeConfiguration` (shape type, stroke and fill colors, line width) as a `Codable` value, the same treatment tools got.
+
+### 3. Importing PencilKit drawings
+`PaperMarkup.append(contentsOf: PKDrawing)` is the migration path for every existing PencilKit app, and we don't expose it. Add `Markup(drawing: PKDrawing, size:)` and `markup.append(_ drawing: PKDrawing)` in `PaperCore`. This could be the package's most persuasive feature for adopters.
+
+### 4. Tool picker configuration
+`.paperToolPicker(isPresented:)` only toggles visibility. Modern `PKToolPicker` lets apps choose which tools appear, add custom tool items, and add an accessory button. Add `.paperToolPicker(isPresented:tools:)` with a `PaperToolPickerItem` list (`.pen`, `.pencil`, `.marker`, `.eraser`, `.lasso`, `.ruler`, `.custom(...)`). Phase 0 should confirm what `PaperMarkupViewController`'s picker integration allows.
+
+### 5. Touch modes, including trackpad and mouse
+`.paperTouchPolicy` is described as Pencil-only versus finger. The controller actually exposes `directTouchMode`, `directTouchAutomaticallyDraws`, and `indirectPointerTouchMode` (trackpad and mouse on iPad and Mac). Replace it with `.paperInput(direct: .pencilOnly, pointer: .draw)` mapping to `TouchMode`, so pointer behavior isn't silently left at the default.
+
+## Tier 2: Documented features with no path through our API
+
+| PaperKit / PencilKit feature | Gap | Proposed surface |
+|---|---|---|
+| `selectedMarkup: PaperMarkup` | Can't copy, share, or export just the selection | `.onPaperSelectionChange { selection, selectedMarkup in }`, or a `selectedMarkup` read-back on the selection value |
+| `contentsRenderFrame` | No "bounds of what's actually drawn" | `markup.contentBounds`, for crop-to-content thumbnails and zoom-to-content |
+| `featureSet`, `removeContentUnsupported(by:)` | No way to check a markup against an older feature set before sharing | `markup.requiredFeatures` and `markup.removeUnsupported(by:)` |
+| `adornments: [MarkupAdornment]`, `adornmentFrame(for:)` | Not covered at all | Needs Phase 0 investigation first. Likely a modifier taking adornment values |
+| `transformContent(_:)` (general) | Only used for rotation | `paper.resize(to:scalingContent:)` for scaling a page and its ink together |
+| iOS 27 programmatic erase with a `PKStrokePath` | Missing | `markup.erase(along: Path)` |
+| iOS 27 `PKStrokePath` ↔ Bézier conversion | Strokes can't be drawn or hit-tested in SwiftUI | `stroke.path: Path` on `PaperStroke` |
+| macOS `MarkupToolbarViewController` | Phase 5, no API sketched | `.paperToolbar()` on macOS, the counterpart of `.paperToolPicker` |
+
+## Tier 3: SwiftUI integration gaps
+
+- **Accessibility.** The editor and `PaperView` should provide a default `accessibilityLabel` from `indexableContent`, so VoiceOver can read a page's handwriting. Apps override it with `.accessibilityLabel` as usual. Nearly free, and easy to forget.
+- **Spotlight and search indexing.** `paper.indexableContent` (a sync property using Apple's cached value) helps apps feed Core Spotlight without running full recognition.
+- **Previews.** `PaperTesting` should ship `Paper.sample` values so `#Preview` works without a device or Pencil.
+- **Apple Pencil Pro hover.** Hover previews come from PencilKit. Confirm PaperKit shows them by default, and document `.paperHoverPreview(_:)` only if it can be turned off.
+
+## Deliberately left out
+- **Substroke ranges and `renderGroupID`:** niche iOS 27 APIs. Expose them if an app asks.
+- **A custom recognizer configuration API:** `preferredLanguages` can wait until someone needs a non-default language.
