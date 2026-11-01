@@ -1,6 +1,6 @@
 # SwiftUI Paper: Plan for a SwiftUI Port of PaperKit
 
-**Status:** v1.6, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
+**Status:** v1.7, Option E locked in, review fixes applied (see [REVIEW.md](REVIEW.md)), docs findings in Section 9.1 · **Date:** 2026-10-31
 
 ## 1. Goal
 
@@ -158,7 +158,26 @@ Why this shape wins:
 - **No redundant modifiers.** Editing on/off reads `\.isEnabled`, so `.disabled(true)` on the editor, or on any container above it, just works.
 - **Commands are value mutations.** `markup.insert(.rectangle, in: rect)` mirrors appending to a string.
 
-**Background content** (`PaperEditor(markup:) { Image("worksheet") }`) is a Phase 3 feature. PaperKit wants a `UIView` under the markup that scales with zoom, and hosting arbitrary SwiftUI content there is non-trivial. Phase 3 ships `Image` backgrounds first.
+**Background content.** PaperKit's mechanism is `PaperMarkupViewController.contentView`, documented as "the content that markup appears on top of" and settable to any `UIView`/`NSView`. Apple's WWDC25 sample uses a `UIImageView` holding a template. Our API exposes it as a trailing view builder, like `ZStack` or `.background { }`:
+
+```swift
+PaperEditor(markup: $markup) {
+    Image("worksheet").resizable()          // image template
+}
+
+PaperEditor(markup: $markup) {
+    PDFPageView(page)                       // ships with PaperUI, vector-sharp at any zoom
+}
+```
+
+Rules:
+- **A background is a view, not content.** It is not stored in `Markup`. The app persists which template or PDF page it used, the same way a PDF viewer keeps the PDF separate from annotations. Use `insertNewImage` only when the image should be a movable, selectable element.
+- **PDF fits our units exactly.** PDF pages are measured in points, so `Markup(paperSize: PaperSize(page.bounds(for: .mediaBox).size))` makes the page and the markup line up one to one with no scaling math.
+- **`PDFPageView`** is a small SwiftUI wrapper around a tiled `UIView` that draws a `PDFPage` with PDFKit, so it stays crisp when zoomed instead of blurring like a pre-rendered image.
+- **Export flattens both.** `markup.image(scale:background:)` draws the background, then the markup, matching Apple's thumbnail sample, which fills the context before calling `draw`.
+- **Plain paper color** stays on the markup (`PaperMarkup.backgroundColor`), because it is content.
+
+Open questions for Phase 0: does `contentView` scale and scroll with the markup automatically, and does a `UIHostingController` view work there? Phase 3 ships `Image` and `PDFPageView` first, then arbitrary SwiftUI content.
 
 ### 4.2 Configuration modifiers (environment)
 
@@ -529,7 +548,7 @@ Platforms: iOS 27, iPadOS 27, macOS 27, and visionOS 27 minimum. PaperKit itself
 | **0. Spike** | Bare `PaperEditor(markup:)` on iPad that answers the checks in Section 9.2 | Markup round-trips through `@State` without loops; strokes found in `subelements` with UUIDs that survive save; selection can (or provably cannot) be set; `bounds` setter behavior known; `.fitWidth` + `.top` anchor works |
 | **1. Model** | `PaperModel` types, `Markup` in `PaperCore`, `Codable`/`Hashable` tests, tool and stroke conversion | Lossless PK ↔ Paper round-trip on fixture strokes; stroke IDs survive save and reload; `paperSize` get/set round-trips; four quarter turns return an equal markup with the same IDs |
 | **2. Core API** | `.paperTool`, `.paperFeatures`, `.paperToolPicker(isPresented:)`, `.disabled`, `.paperContentMode`, `.paperZoomRange`, loop-safe coordinator | Tool picker and a SwiftUI button both change the tool with no flicker; all four content modes behave through rotation |
-| **3. Interaction** | Selection (binding or callback per Phase 0), async `PaperThumbnail`, `onPaperGeometryChange`, insertion menu, `Image` backgrounds, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
+| **3. Interaction** | Selection (binding or callback per Phase 0), async `PaperThumbnail`, `onPaperGeometryChange`, insertion menu, `Image` and `PDFPageView` backgrounds, `onPaperDrawingBegan` | Selection survives edits by stroke ID; geometry action fires only on transformed-value changes |
 | **4. Native UI** | `PaperToolbar` in pure SwiftUI, `PaperThumbnail` | Demo app ships without `PKToolPicker` |
 | **5. Platforms** | macOS (`MarkupToolbarViewController`), visionOS | Same demo runs on every supported platform |
 
