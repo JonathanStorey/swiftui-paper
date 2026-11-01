@@ -962,7 +962,7 @@ Checked against Apple's PaperKit reference pages and the WWDC26 PencilKit sessio
 
 | Question | Answer from docs | Effect on the plan |
 |---|---|---|
-| Is `dataRepresentation()` async? | **Yes:** `func dataRepresentation() async throws -> Data`. `init(dataRepresentation:)` is sync and `throws` | Confirms 5.5: hold a live `PaperMarkup`, keep a background-refreshed snapshot for `encode(to:)`, expose `try await markup.data()` |
+| Is `dataRepresentation()` async? | **Yes:** `func dataRepresentation() async throws -> Data`. `init(dataRepresentation:)` is sync and `throws` | Confirms 5.5: hold a live `PaperMarkup`, keep a background-refreshed snapshot for `encode(to:)`, expose `try await markup.dataRepresentation()` |
 | What does `PaperMarkup` conform to? | `Identifiable`, `Equatable`, `Sendable`. **Not** `Codable` or `Hashable` | Wrapper still needed for `Codable`/`Hashable`. Apple's `Equatable` can back our `==` once the token check misses |
 | Can we read the contents? | `subelements: MarkupOrderedSet`, keyed by `MarkupOrderedSet.ElementID`. No stroke or `PKDrawing` getter (`append(contentsOf: PKDrawing)` is write-only) | `elements` projection is feasible. `strokes` depends on whether ink appears inside `subelements` (Phase 0) |
 | Do strokes have stable IDs? | **Yes, iOS 27:** `PKStroke` and `PKStrokePath` are `Identifiable` with a stable `UUID` that survives transforms, edits, and undo. Apple says the new PencilKit APIs also work with PaperKit | `PaperStroke.ID` wraps a `UUID`. Raises the floor to iOS 27 for stroke identity |
