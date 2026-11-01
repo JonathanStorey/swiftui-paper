@@ -111,6 +111,8 @@ extension Paper {
         case star
         case chatBubble
         case arrow
+        /// Reported for lines. Create lines with `insertLine(from:to:style:startArrow:endArrow:)`.
+        case line
     }
 }
 
@@ -127,7 +129,7 @@ extension Paper.Element {
             kind = .stroke(Paper.Stroke.ID(uuid: uuid))
         case .shape:
             if let shape = element as? ShapeMarkup {
-                kind = shape.attributedText.characters.isEmpty ? .shape(Paper.Shape(shape.shape)) : .text
+                kind = shape.attributedText.characters.isEmpty ? .shape(Paper.Shape(shape.shapeScaled)) : .text
             } else {
                 kind = .shape(.rectangle)
             }
@@ -140,13 +142,12 @@ extension Paper.Element {
 }
 
 extension Paper.Shape {
-    /// Lines have no `Paper.Shape` case yet (PLAN 4.5). They read as `.arrow`, which a line with
-    /// markers most resembles. Recorded in SDK-FINDINGS as an open spec question.
     init(_ shape: ShapeMarkup.Shape) {
         switch shape {
         case .rectangle(let rectangle):
             if let radius = rectangle.cornerRadius, radius > 0 {
-                self = .roundedRectangle(cornerRadius: radius)
+                // shapeScaled multiplies by the frame's short side, which adds float noise.
+                self = .roundedRectangle(cornerRadius: (radius * 1000).rounded() / 1000)
             } else {
                 self = .rectangle
             }
@@ -154,7 +155,8 @@ extension Paper.Shape {
         case .regularPolygon(let polygon): self = .regularPolygon(sides: polygon.sides)
         case .star: self = .star
         case .chatBubble: self = .chatBubble
-        case .arrowShape, .line: self = .arrow
+        case .arrowShape: self = .arrow
+        case .line: self = .line
         @unknown default: self = .rectangle
         }
     }
