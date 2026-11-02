@@ -29,10 +29,25 @@ extension PaperEditorController {
     /// The controller's selection as element IDs, locked elements removed.
     ///
     /// Lasso selections of strokes show up in `selectedMarkup` but not in `selection`
-    /// (SDK-FINDINGS E.5), so both are read.
+    /// (SDK-FINDINGS E.5), and `selectedMarkup` holds copies whose stroke IDs differ from the
+    /// page's (SDK-FINDINGS G). Copies are matched back to page strokes by their path.
     private var currentSelection: Paper.Selection {
-        var ids = markupController.selection
-        ids.formUnion(markupController.selectedMarkup.subelements.ids)
+        guard let page = markupController.markup else { return Paper.Selection() }
+        let onPage = Set(page.subelements.ids)
+        var ids = markupController.selection.intersection(onPage)
+        let copies = markupController.selectedMarkup.subelements.strokes
+        if !copies.isEmpty {
+            let pageStrokes = page.subelements.strokes
+            for copy in copies {
+                if onPage.contains(.stroke(copy.id)) {
+                    ids.insert(.stroke(copy.id))
+                } else if let original = pageStrokes.first(where: { !ids.contains(.stroke($0.id)) && $0.isSameStroke(as: copy) }) {
+                    ids.insert(.stroke(original.id))
+                }
+            }
+        }
+        debugLog("selection sources: selection", markupController.selection.count,
+                 "selectedMarkup strokes", copies.count, "on page", ids.count)
         let unlocked: [Paper.Element.ID] = ids.compactMap { isLocked($0) ? nil : Paper.Element.ID($0) }
         return Paper.Selection(unlocked)
     }
@@ -207,6 +222,27 @@ extension PaperEditorController {
         pushedAdornments = adornments
         binding.wrappedValue = adornments
         debugLog("adornment moved:", id, location)
+    }
+}
+
+extension PKStroke {
+    /// The same stroke under a different ID, as `selectedMarkup` reports lasso selections.
+    func isSameStroke(as other: PKStroke) -> Bool {
+        path.creationDate == other.path.creationDate
+            && path.count == other.path.count
+            && ink.inkType == other.ink.inkType
+            && renderBounds.insetBy(dx: -0.5, dy: -0.5).contains(other.renderBounds.insetBy(dx: 0.5, dy: 0.5))
+            && Self.close(endpoints, other.endpoints)
+    }
+
+    /// The first and last points in page coordinates.
+    private var endpoints: [CGPoint] {
+        guard path.count > 0 else { return [] }
+        return [path[0].location, path[path.count - 1].location].map { $0.applying(transform) }
+    }
+
+    private static func close(_ a: [CGPoint], _ b: [CGPoint]) -> Bool {
+        a.count == b.count && zip(a, b).allSatisfy { abs($0.x - $1.x) < 0.5 && abs($0.y - $1.y) < 0.5 }
     }
 }
 
