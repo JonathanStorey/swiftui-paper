@@ -95,7 +95,8 @@ struct WorksheetView: View {
                     position.scrollTo(rect: CGRect(origin: .zero, size: CGSize(width: paper.size.size.width / 2, height: paper.size.size.height / 2)))
                 }
                 Button("Zoom to Fit") { position.zoomToFit() }
-                Toggle("Scroll Disabled", isOn: $scrollDisabled)
+                Button(scrollDisabled ? "Enable Scrolling" : "Disable Scrolling") { scrollDisabled.toggle() }
+                LabeledContent("Scrolling", value: scrollDisabled ? "disabled" : "enabled")
             }
             Section("Insert") {
                 Button("Rectangle") {
@@ -119,7 +120,7 @@ struct WorksheetView: View {
                     Text("Select").tag(PaperTouchMode.select)
                 }
                 .pickerStyle(.segmented)
-                Toggle("Ruler", isOn: $rulerActive)
+                Button(rulerActive ? "Hide Ruler" : "Show Ruler") { rulerActive.toggle() }
                 Button("Use Stamp (custom tool)") { tool = .custom(id: "stamp") }
                 LabeledContent("Tool", value: Self.describe(tool))
                 LabeledContent("Strokes begun", value: "\(strokesBegun)")
@@ -136,7 +137,8 @@ struct WorksheetView: View {
             }
             Section("Page") {
                 Toggle("Tool Picker", isOn: $showPicker)
-                Toggle("Read Only", isOn: $isReadOnly)
+                Button(isReadOnly ? "Make Editable" : "Make Read Only") { isReadOnly.toggle() }
+                LabeledContent("Editing", value: isReadOnly ? "read only" : "editable")
                 Toggle("Thumbnail", isOn: $showThumbnail)
                 Button("Unlock All") { paper.unlockAll() }
                 #if DEBUG

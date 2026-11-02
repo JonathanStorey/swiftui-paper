@@ -132,7 +132,10 @@ final class PaperEditorController: PlatformViewController, PaperMarkupViewContro
         }
         pushPaperIfNeeded()
         updateBackground()
-        markupController.isEditable = environment.isEnabled
+        if markupController.isEditable != environment.isEnabled {
+            markupController.isEditable = environment.isEnabled
+            debugLog("editable:", markupController.isEditable)
+        }
         pushToolIfNeeded()
 
         if environment.paperContentPlacement != placement || environment.paperZoomRange != zoomRange {

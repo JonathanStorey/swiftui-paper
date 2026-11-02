@@ -18,7 +18,10 @@ extension PaperEditorController {
         applyBorrowedEnvironment()
         pushAdornmentsIfNeeded()
         #if !os(macOS)
-        markupController.isRulerActive = environment.paperRulerActive
+        if markupController.isRulerActive != environment.paperRulerActive {
+            markupController.isRulerActive = environment.paperRulerActive
+            debugLog("ruler active:", markupController.isRulerActive)
+        }
         updateInsertionMenu()
         updateToolPickerAccessory()
         #endif
@@ -173,6 +176,10 @@ extension PaperEditorController {
         case .draw: .drawing
         case .select: .selection
         }
+        #if !os(macOS)
+        debugLog("input direct:", input.direct, "automaticallyDraws:", markupController.directTouchAutomaticallyDraws,
+                 "directTouchMode:", markupController.directTouchMode)
+        #endif
         if markupController.indirectPointerTouchMode != pointer {
             markupController.indirectPointerTouchMode = pointer
         }
@@ -183,6 +190,7 @@ extension PaperEditorController {
         let scroll = markupController.scrollConfiguration
         if scroll.isScrollEnabled != environment.isScrollEnabled {
             scroll.isScrollEnabled = environment.isScrollEnabled
+            debugLog("scroll enabled:", scroll.isScrollEnabled)
         }
         var axes: PaperMarkupViewController.ScrollConfiguration.Axis = []
         if Self.shows(environment.horizontalScrollIndicatorVisibility) { axes.insert(.horizontal) }
@@ -287,7 +295,12 @@ extension PaperEditorController: @preconcurrency MarkupEditViewController.Delega
                 popover.delegate = self
             }
             insertionMenu = menu
-            present(menu, animated: !environment.accessibilityReduceMotion)
+            // Present from the top of the window's presentation chain; a child of a SwiftUI
+            // hosting controller can't present reliably itself.
+            var presenter: UIViewController = view.window?.rootViewController ?? self
+            while let presented = presenter.presentedViewController { presenter = presented }
+            presenter.present(menu, animated: !environment.accessibilityReduceMotion)
+            debugLog("insertion menu presented from", type(of: presenter), "presented:", menu.presentingViewController != nil)
         } else if !wantsMenu, let menu = insertionMenu {
             insertionMenu = nil
             menu.dismiss(animated: !environment.accessibilityReduceMotion)
