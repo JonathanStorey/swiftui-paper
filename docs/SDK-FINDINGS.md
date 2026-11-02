@@ -571,3 +571,33 @@ Other behavior found on the way:
 8. **Lines have no `Paper.Shape` case.** PLAN 4.5 omits `line`, so `Element.Kind` reports a line as `.shape(.arrow)` for now. This is an open spec question for Phase 3.
 
 Not exercised in the UI: the share sheet itself. Like the Options menu, toolbar popovers do not present from simulated taps. The bytes it would send were checked instead: a DEBUG `-writePDF` launch argument writes the same `pdfData()` to Documents, and that file renders correctly.
+
+---
+
+## G. Phase 3 checks
+
+Runtime results from `Tests/PaperUITests` and the demo's inspector on the iPad Pro 11-inch (M5) iOS 27.0 simulator.
+
+| PLAN.md | Modifier or API | Result in the demo |
+|---|---|---|
+| §3.1 | `.paperSelection` | **Works both ways.** "Select All Unlocked" selects 6 elements in the editor; "Clear Selection" clears it. A lasso around two strokes writes both stroke IDs to the binding |
+| §3.3 | `onPaperSelectionChange` | Fires with the selected content as a `Paper` (6 elements for 6 selected) |
+| §3.1 | `.paperScrollPosition` | `scrollTo(rect:)` zooms to 200% (visible x 0–306), `scrollTo(selection:)` fits the selection (134%), `zoomToFit()` returns to 100%. `visibleRect` writes back |
+| §3.3 | `onPaperGeometryChange` | Reports relative zoom 100% / 200% / 134% matching the above |
+| §3.3 | `onPaperDrawingBegan` | Stays 0 for lasso use. A drawing count was not read back (see below) |
+| §4.1 | `insertShape`, `insertLine`, `insertText`, `insertImage` | Rounded blue rectangle, red arrow line, "Name:" text box, and an image all appear where specified |
+| §3.1 | `.paperToolPicker(items:)` with `.custom` | The custom Stamp item appears; "Use Stamp" sets `.custom(id: "stamp")` |
+| §3.2 | `.paperToolPickerAccessory` | Star button at the picker's end; tapping it runs the action (count 1) |
+| §3.1 | `.paperAdornments` | "Add Badge" shows the badge at (300, 300). Tapping it calls `onTap` (taps 1). Dragging it writes back the new location (357, 460) |
+| §3.2 | `.paperInput` | The Finger segment switches; drawing with Draw mode set was not separately confirmed |
+| §3.1 | `.paperInsertionMenu` | **Not confirmed.** Tapping the inspector button did not show the popover in the run where it was tried, which was late in a session where simulated taps had become unreliable. Needs a check on a fresh launch or device |
+| §3.2, §3.4 | `.paperRulerActive`, `.scrollDisabled`, `.disabled` | **Not confirmed.** Simulated taps did not flip SwiftUI `Toggle` switches in the inspector form (buttons and segmented pickers worked) |
+
+Behavior found on the way:
+
+1. **`ShapeMarkup.shape` is in units of the frame's shorter side; `shapeScaled` is in points.** A corner radius of 8 on a 100 × 50 frame passed to `shape` was clamped to 0.5 (and drew as 25 pt). `insertShape` sets `shapeScaled`, and `elements` reads it (rounded to 1/1000 to drop float noise: 12 read back as 12.000000000000002). Line endpoints use the same scaling, so `insertLine` goes through `insertNewLine`.
+2. **`selectedMarkup` holds copies with new IDs.** After a lasso, `selection` is empty and `selectedMarkup` has the strokes, but under different stroke IDs than the page. Merging those IDs into the selection grew it on every round trip (6 → 12 → 18 … in the demo). The coordinator now keeps only IDs on the page and matches each copied stroke to its original by creation date, point count, ink, bounds, and endpoints.
+3. **`removeElement(for:)` does remove strokes.** Only `removeAll(where:)` skips them (F.3). `remove(_:)` uses `removeStroke(for:)` for strokes anyway.
+4. **Element order is strokes last** (F.2): inserted shapes, text, and images always stack below all ink. `insertShape` documents this.
+5. **Selecting from code shows PaperKit's edit menu** (color, duplicate, delete), the same as a user selection.
+6. **Simulator UI automation degrades over a long session.** After about an hour of driving the demo, taps and swipes on the canvas and inspector stopped registering while the app stayed idle (main thread in its run loop, 0% CPU). A fresh launch restored input. This is a test-harness limit, not a PaperUI hang, but the unconfirmed rows above should be rechecked on a fresh launch.
